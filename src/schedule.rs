@@ -12,7 +12,6 @@ use std::fmt::Display;
 /// | Month        | Yes      | 1-12 or JAN-DEC | * , - /                    |
 /// | Day of Week  | Yes      | 0-6 or SUN-SAT  | * , - ? L #                |
 /// | Year         | No       | 1970-2099       | * , - /                    |
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Schedule {
     pattern: Pattern,
@@ -21,8 +20,9 @@ pub struct Schedule {
 impl Schedule {
     /// Schedule constructor.
     pub fn new(pattern: impl Into<String>) -> Result<Self> {
+        let pattern = pattern.into();
         Ok(Self {
-            pattern: Pattern::new(pattern.into())?,
+            pattern: Pattern::new(&pattern)?,
         })
     }
 }
@@ -38,8 +38,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn display() {
+    fn schedule_display() {
         let schedule = Schedule::new("*/5 * * * *").unwrap();
-        assert_eq!(schedule.to_string(), "*/5 * * * *");
+        assert_eq!(schedule.to_string(), "0 0/5 * * * * *");
     }
 }

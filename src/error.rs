@@ -27,4 +27,10 @@ pub enum Error {
     /// Invalid day of week value specified.
     #[error("invalid day of week value: {0}")]
     InvalidDayOfWeekValue(String),
+    /// Invalid range value specified.
+    #[error("invalid range value: {0}")]
+    InvalidRangeValue(String),
+    /// Invalid repeating pattern specified.
+    #[error("invalid repeating pattern: {0}")]
+    InvalidRepeatingPattern(String),
 }
