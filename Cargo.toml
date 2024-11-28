@@ -16,3 +16,7 @@ exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".g
 [dependencies]
 chrono = { version = "0.4.38", default-features = false, features = ["std", "now"] }
 thiserror = "2.0.3"
+
+[dev-dependencies]
+rstest = { version = "0.23.0", default-features = false }
+rstest_reuse = { version = "0.7.0", default-features = false }

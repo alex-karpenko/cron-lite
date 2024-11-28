@@ -1,91 +1,25 @@
-use crate::{Error, Result};
-use std::{
-    fmt::{Debug, Display},
-    ops::Index,
+use crate::{
+    series::SeriesWithStep,
+    utils::{self, days_in_month},
+    Error, Result,
 };
+use chrono::{DateTime, Datelike, TimeZone, Timelike};
+use std::{collections::BTreeSet, fmt::Display};
 
-type PatternPartsSlice = [PatternPartType; 7];
+const MIN_YEAR: u16 = 1970;
+const MIN_YEAR_STR: &str = "1970";
+const MAX_YEAR: u16 = 2099;
+
+pub(crate) type PatternValueType = u16;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Pattern {
-    pattern: String,
-    parts: PatternPartsSlice,
+    type_: PatternType,
+    pattern: PatternItem,
 }
 
 impl Pattern {
-    pub(crate) fn new(pattern: &str) -> Result<Self> {
-        let mut parts = pattern.split_whitespace().collect::<Vec<_>>();
-        let len = parts.len();
-        if !(5..=7).contains(&len) {
-            return Err(Error::InvalidCronPattern(pattern.to_string()));
-        } else if len == 5 {
-            parts.insert(0, "0");
-            parts.insert(6, "*");
-        } else if len == 6 {
-            parts.insert(6, "*");
-        }
-
-        let parsed: PatternPartsSlice = [
-            PatternPart::Seconds.parse(parts[0])?,
-            PatternPart::Minutes.parse(parts[1])?,
-            PatternPart::Hours.parse(parts[2])?,
-            PatternPart::Doms.parse(parts[3])?,
-            PatternPart::Months.parse(parts[4])?,
-            PatternPart::Dows.parse(parts[5])?,
-            PatternPart::Years.parse(parts[6])?,
-        ];
-
-        Ok(Self {
-            pattern: pattern.to_string(),
-            parts: parsed,
-        })
-    }
-}
-
-impl<T> Index<PatternPart> for [T] {
-    type Output = T;
-
-    fn index(&self, index: PatternPart) -> &Self::Output {
-        let index = index as usize;
-        &self[index]
-    }
-}
-
-impl Display for Pattern {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let pattern = self
-            .parts
-            .iter()
-            .map(|part| part.to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        write!(f, "{}", pattern)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum PatternPart {
-    Seconds = 0,
-    Minutes = 1,
-    Hours = 2,
-    Doms = 3,
-    Months = 4,
-    Dows = 5,
-    Years = 6,
-}
-
-impl PatternPart {
-    fn parse(&self, input: &str) -> Result<PatternPartType> {
-        let value_parser: fn(&str) -> Result<PatternPartValue> = match self {
-            PatternPart::Seconds => PatternPartValue::second,
-            PatternPart::Minutes => PatternPartValue::minute,
-            PatternPart::Hours => PatternPartValue::hour,
-            PatternPart::Doms => PatternPartValue::dom,
-            PatternPart::Months => PatternPartValue::month,
-            PatternPart::Dows => PatternPartValue::dow,
-            PatternPart::Years => PatternPartValue::year,
-        };
-
+    pub(crate) fn parse(type_: PatternType, input: &str) -> Result<Self> {
         if input.is_empty() {
             return Err(Error::InvalidCronPattern(input.to_owned()));
         }
@@ -95,65 +29,69 @@ impl PatternPart {
             .split(',')
             .map(|value| {
                 if value == "*" {
-                    Ok(PatternPartType::All)
-                } else if value == "?" && [PatternPart::Dows, PatternPart::Doms].contains(self) {
-                    Ok(PatternPartType::Any)
-                } else if value.ends_with('L') && self == &PatternPart::Dows {
+                    Ok(PatternItem::All)
+                } else if value == "?" && [PatternType::Dows, PatternType::Doms].contains(&type_) {
+                    Ok(PatternItem::Any)
+                } else if value.ends_with('L') && type_ == PatternType::Dows {
                     let value = value.trim_end_matches('L');
-                    Ok(PatternPartType::LastDow(value_parser(value)?))
-                } else if value == "L" && self == &PatternPart::Doms {
-                    Ok(PatternPartType::LastDom)
-                } else if value.ends_with('W') && self == &PatternPart::Doms {
+                    Ok(PatternItem::LastDow(type_.parse(value)?))
+                } else if value == "L" && type_ == PatternType::Doms {
+                    Ok(PatternItem::LastDom)
+                } else if value.ends_with('W') && type_ == PatternType::Doms {
                     let value = value.trim_end_matches('W');
-                    Ok(PatternPartType::Weekday(value_parser(value)?))
-                } else if value.contains('/') && self != &PatternPart::Dows {
+                    Ok(PatternItem::Weekday(type_.parse(value)?))
+                } else if value.contains('/') && type_ != PatternType::Dows {
                     let (base, repeater) = value.split_once('/').unwrap();
                     let base = if base == "*" {
-                        match self {
-                            PatternPart::Doms | PatternPart::Months => "1",
-                            PatternPart::Years => "1970",
+                        match type_ {
+                            PatternType::Doms | PatternType::Months => "1",
+                            PatternType::Years => MIN_YEAR_STR,
                             _ => "0",
                         }
                     } else {
                         base
                     };
-                    let repeater = repeater.parse().unwrap();
-                    if repeater < 2 {
+
+                    let repeater = if let Ok(repeater) = repeater.parse() {
+                        let (_min, max) = type_.min_max();
+                        if repeater < 2 || repeater > max {
+                            return Err(Error::InvalidRepeatingPattern(value.to_owned()));
+                        }
+                        repeater
+                    } else {
                         return Err(Error::InvalidRepeatingPattern(value.to_owned()));
-                    }
+                    };
+
                     if base.contains('-') {
                         let (start, end) = base.split_once('-').unwrap();
-                        let start = value_parser(start)?;
-                        let end = value_parser(end)?;
+                        let start = type_.parse(start)?;
+                        let end = type_.parse(end)?;
                         if start >= end {
                             return Err(Error::InvalidRangeValue(value.to_owned()));
                         }
-                        Ok(PatternPartType::RepeatingRange(start, end, repeater))
+                        Ok(PatternItem::RepeatingRange(start, end, repeater))
                     } else {
-                        Ok(PatternPartType::RepeatingValue(value_parser(base)?, repeater))
+                        Ok(PatternItem::RepeatingValue(type_.parse(base)?, repeater))
                     }
                 } else if value.contains('-') {
                     let (start, end) = value.split_once('-').unwrap();
-                    let start = value_parser(start)?;
-                    let end = value_parser(end)?;
+                    let start = type_.parse(start)?;
+                    let end = type_.parse(end)?;
                     if start >= end {
                         return Err(Error::InvalidRangeValue(value.to_owned()));
                     }
-                    Ok(PatternPartType::Range(start, end))
-                } else if value.contains('#') && self == &PatternPart::Dows {
+                    Ok(PatternItem::Range(start, end))
+                } else if value.contains('#') && type_ == PatternType::Dows {
                     let mut parts = value.split('#');
                     let dow = parts.next().unwrap();
                     let number = parts.next().unwrap();
-                    let number = parse_digital_value(number, 1, 4);
+                    let number = utils::parse_digital_value(number, 1, 4);
                     if number.is_none() {
                         return Err(Error::InvalidDayOfWeekValue(value.to_owned()));
                     }
-                    Ok(PatternPartType::Hash(
-                        PatternPartValue::dow(dow)?,
-                        number.unwrap() as u8,
-                    ))
+                    Ok(PatternItem::Sharp(type_.parse(dow)?, number.unwrap()))
                 } else {
-                    Ok(PatternPartType::Particular(value_parser(value)?))
+                    Ok(PatternItem::Particular(type_.parse(value)?))
                 }
             })
             .scan(&mut error_indicator, |err, res| match res {
@@ -168,968 +106,872 @@ impl PatternPart {
         error_indicator?;
 
         if splitted.is_empty()
-            || (splitted.len() > 1
-                && (splitted.contains(&PatternPartType::All) || splitted.contains(&PatternPartType::Any)))
+            || (splitted.len() > 1 && (splitted.contains(&PatternItem::All) || splitted.contains(&PatternItem::Any)))
         {
             return Err(Error::InvalidCronPattern(input.to_owned()));
         }
 
-        if splitted.len() > 1 {
-            Ok(PatternPartType::List(splitted))
+        let pattern = if splitted.len() > 1 {
+            PatternItem::List(splitted)
         } else {
-            Ok(splitted.remove(0))
-        }
+            splitted.remove(0)
+        };
+
+        Ok(Self { type_, pattern })
+    }
+
+    pub(crate) fn iter_starting_from<Tz: TimeZone>(
+        &self,
+        start_date: &DateTime<Tz>,
+    ) -> impl Iterator<Item = PatternValueType> {
+        let (min, max) = self.type_.min_max();
+        let max = if self.type_ == PatternType::Doms {
+            days_in_month(
+                start_date.year() as PatternValueType,
+                start_date.month() as PatternValueType,
+            )
+        } else {
+            max
+        };
+
+        let start = match self.type_ {
+            PatternType::Seconds => start_date.second() as PatternValueType,
+            PatternType::Minutes => start_date.minute() as PatternValueType,
+            PatternType::Hours => start_date.hour() as PatternValueType,
+            PatternType::Doms => start_date.day() as PatternValueType,
+            PatternType::Months => start_date.month() as PatternValueType,
+            PatternType::Dows => 0,
+            PatternType::Years => start_date.year() as PatternValueType,
+        };
+
+        let series: BTreeSet<PatternValueType> = match &self.pattern {
+            PatternItem::List(values) => {
+                let mut result = BTreeSet::new();
+                for pattern in values {
+                    let item = Self {
+                        type_: self.type_.clone(),
+                        pattern: pattern.clone(),
+                    };
+                    let item_series = item.iter_starting_from(start_date).collect::<Vec<PatternValueType>>();
+                    result.extend(item_series);
+                }
+                result
+            }
+            PatternItem::All => SeriesWithStep::new(min, max, 1, start).collect(),
+            PatternItem::Particular(value) => {
+                if *value >= start {
+                    BTreeSet::from([*value])
+                } else {
+                    BTreeSet::new()
+                }
+            }
+            PatternItem::Range(min, max) => SeriesWithStep::new(*min, *max, 1, *min)
+                .filter(|v| *v >= start)
+                .collect(),
+            PatternItem::RepeatingValue(range_start, step) => {
+                SeriesWithStep::new(*range_start, max, *step, *range_start)
+                    .filter(|v| *v >= start)
+                    .collect()
+            }
+            PatternItem::RepeatingRange(min, max, step) => SeriesWithStep::new(*min, *max, *step, *min)
+                .filter(|v| *v >= start)
+                .collect(),
+            PatternItem::LastDow(dow) => BTreeSet::from([utils::last_dow(
+                start_date.year() as PatternValueType,
+                start_date.month() as PatternValueType,
+                *dow,
+            )]),
+            PatternItem::LastDom => BTreeSet::from([utils::days_in_month(
+                start_date.year() as PatternValueType,
+                start_date.month() as PatternValueType,
+            )]),
+            PatternItem::Weekday(dom) => {
+                let weekday = utils::nearest_weekday(
+                    start_date.year() as PatternValueType,
+                    start_date.month() as PatternValueType,
+                    *dom,
+                );
+                if weekday >= start {
+                    BTreeSet::from([weekday])
+                } else {
+                    BTreeSet::new()
+                }
+            }
+            PatternItem::Sharp(dow, number) => BTreeSet::from([utils::nth_dow(
+                start_date.year() as PatternValueType,
+                start_date.month() as PatternValueType,
+                *dow,
+                *number,
+            )]),
+            PatternItem::Any => unreachable!(),
+        };
+
+        series.into_iter()
+    }
+}
+
+impl Display for Pattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.pattern)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum PatternPartType {
-    All,
-    Any,
-    Particular(PatternPartValue),
-    List(Vec<PatternPartType>),
-    Range(PatternPartValue, PatternPartValue),
-    RepeatingValue(PatternPartValue, u8),
-    RepeatingRange(PatternPartValue, PatternPartValue, u8),
-    LastDow(PatternPartValue),
-    LastDom,
-    Weekday(PatternPartValue),
-    Hash(PatternPartValue, u8),
+pub(crate) enum PatternType {
+    Seconds = 0,
+    Minutes = 1,
+    Hours = 2,
+    Doms = 3,
+    Months = 4,
+    Dows = 5,
+    Years = 6,
 }
 
-impl Display for PatternPartType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PatternPartType::All => write!(f, "*"),
-            PatternPartType::Any => write!(f, "?"),
-            PatternPartType::Particular(value) => write!(f, "{value}"),
-            PatternPartType::List(values) => {
-                let values = values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-                write!(f, "{}", values)
-            }
-            PatternPartType::Range(start, end) => write!(f, "{start}-{end}"),
-            PatternPartType::RepeatingValue(value, repeater) => write!(f, "{value}/{repeater}"),
-            PatternPartType::RepeatingRange(start, end, repeater) => {
-                write!(f, "{start}-{end}/{repeater}")
-            }
-            PatternPartType::LastDow(value) => write!(f, "{value}L"),
-            PatternPartType::LastDom => write!(f, "L"),
-            PatternPartType::Weekday(value) => write!(f, "{value}W"),
-            PatternPartType::Hash(value, number) => write!(f, "{value}#{number}"),
-        }
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum PatternPartValue {
-    Year(u16),
-    Dow(u8),
-    Month(u8),
-    Dom(u8),
-    Hour(u8),
-    Minute(u8),
-    Second(u8),
-}
-
-impl Display for PatternPartValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PatternPartValue::Year(year) => write!(f, "{year}"),
-            PatternPartValue::Dow(dow) => write!(
-                f,
-                "{}",
-                capitalize(Self::DAYS_OF_WEEK[*dow as usize].to_lowercase().as_str())
-            ),
-            PatternPartValue::Month(month) => {
-                write!(
-                    f,
-                    "{}",
-                    capitalize(Self::MONTHS[*month as usize - 1].to_lowercase().as_str())
-                )
-            }
-            PatternPartValue::Dom(dom) => write!(f, "{dom}"),
-            PatternPartValue::Hour(hour) => write!(f, "{hour}"),
-            PatternPartValue::Minute(minute) => write!(f, "{minute}"),
-            PatternPartValue::Second(second) => write!(f, "{second}"),
-        }
-    }
-}
-impl PatternPartValue {
+impl PatternType {
     const DAYS_OF_WEEK: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
     const MONTHS: [&str; 12] = [
         "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
     ];
 
-    fn year(input: &str) -> Result<Self> {
-        if let Some(year) = parse_digital_value(input, 1970, 2099) {
-            Ok(Self::Year(year))
-        } else {
-            Err(Error::InvalidYearValue(input.to_owned()))
+    fn min_max(&self) -> (PatternValueType, PatternValueType) {
+        match self {
+            Self::Seconds => (0, 59),
+            Self::Minutes => (0, 59),
+            Self::Hours => (0, 23),
+            Self::Doms => (1, 31),
+            Self::Months => (1, 12),
+            Self::Dows => (0, 6),
+            Self::Years => (MIN_YEAR, MAX_YEAR),
         }
     }
 
-    fn hour(input: &str) -> Result<Self> {
-        if let Some(hour) = parse_digital_value(input, 0, 23) {
-            Ok(Self::Hour(hour as u8))
-        } else {
-            Err(Error::InvalidHourValue(input.to_owned()))
-        }
-    }
+    fn parse(&self, input: &str) -> Result<PatternValueType> {
+        let (min, max) = self.min_max();
+        let (variants, starter_shift) = match self {
+            PatternType::Seconds
+            | PatternType::Minutes
+            | PatternType::Hours
+            | PatternType::Doms
+            | PatternType::Years => (vec![], 0),
+            PatternType::Months => (Self::MONTHS.to_vec(), 1),
+            PatternType::Dows => (Self::DAYS_OF_WEEK.to_vec(), 0),
+        };
 
-    fn minute(input: &str) -> Result<Self> {
-        if let Some(minute) = parse_digital_value(input, 0, 59) {
-            Ok(Self::Minute(minute as u8))
-        } else {
-            Err(Error::InvalidMinuteValue(input.to_owned()))
-        }
-    }
-
-    fn second(input: &str) -> Result<Self> {
-        if let Some(second) = parse_digital_value(input, 0, 59) {
-            Ok(Self::Second(second as u8))
-        } else {
-            Err(Error::InvalidSecondValue(input.to_owned()))
-        }
-    }
-
-    fn month(input: &str) -> Result<Self> {
-        if let Some(month) = parse_digital_value(input, 1, 12) {
-            Ok(Self::Month(month as u8))
-        } else if let Some(month) = parse_string_value(input, &Self::MONTHS) {
-            Ok(Self::Month((month + 1) as u8))
-        } else {
-            Err(Error::InvalidMonthValue(input.to_owned()))
-        }
-    }
-
-    fn dom(input: &str) -> Result<Self> {
-        if let Some(dom) = parse_digital_value(input, 1, 31) {
-            Ok(Self::Dom(dom as u8))
-        } else {
-            Err(Error::InvalidDayOfMonthValue(input.to_owned()))
-        }
-    }
-
-    fn dow(input: &str) -> Result<Self> {
-        if let Some(dow) = parse_digital_value(input, 0, 6) {
-            Ok(Self::Dow(dow as u8))
-        } else if let Some(dow) = parse_string_value(input, &Self::DAYS_OF_WEEK) {
-            Ok(Self::Dow(dow as u8))
-        } else {
-            Err(Error::InvalidDayOfWeekValue(input.to_owned()))
+        match self {
+            PatternType::Seconds
+            | PatternType::Minutes
+            | PatternType::Hours
+            | PatternType::Doms
+            | PatternType::Years => {
+                if let Some(value) = utils::parse_digital_value(input, min, max) {
+                    Ok(value)
+                } else {
+                    Err(Error::InvalidDigitalValue(input.to_owned()))
+                }
+            }
+            PatternType::Months | PatternType::Dows => {
+                if let Some(value) = utils::parse_digital_value(input, min, max) {
+                    Ok(value)
+                } else if let Some(value) = utils::parse_string_value(input, &variants) {
+                    Ok(value + starter_shift)
+                } else {
+                    Err(Error::InvalidMnemonicValue(input.to_owned()))
+                }
+            }
         }
     }
 }
 
-fn parse_digital_value(input: &str, min: u16, max: u16) -> Option<u16> {
-    let value = input.parse::<u16>();
-    if let Ok(value) = value {
-        if value < min || value > max {
-            None
-        } else {
-            Some(value)
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum PatternItem {
+    All,
+    Any,
+    Particular(PatternValueType),
+    List(Vec<PatternItem>),
+    // start-finish
+    Range(PatternValueType, PatternValueType),
+    // start/step
+    RepeatingValue(PatternValueType, PatternValueType),
+    // start-finish/step
+    RepeatingRange(PatternValueType, PatternValueType, PatternValueType),
+    // weekday
+    LastDow(PatternValueType),
+    LastDom,
+    // month
+    Weekday(PatternValueType),
+    // weekday#nth
+    Sharp(PatternValueType, PatternValueType),
+}
+
+impl Display for PatternItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PatternItem::All => write!(f, "*"),
+            PatternItem::Any => write!(f, "?"),
+            PatternItem::LastDow(dow) => write!(f, "{}L", dow),
+            PatternItem::LastDom => write!(f, "L"),
+            PatternItem::Weekday(dom) => write!(f, "{}W", dom),
+            PatternItem::RepeatingValue(value, repeater) => write!(f, "{}/{}", value, repeater),
+            PatternItem::RepeatingRange(start, end, repeater) => {
+                write!(f, "{}-{}/{}", start, end, repeater)
+            }
+            PatternItem::Range(start, end) => write!(f, "{}-{}", start, end),
+            PatternItem::Particular(value) => write!(f, "{}", value),
+            PatternItem::List(vec) => {
+                let values = vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+                write!(f, "{}", values)
+            }
+            PatternItem::Sharp(dow, number) => write!(f, "{}#{}", dow, number),
         }
-    } else {
-        None
-    }
-}
-
-fn parse_string_value(input: &str, array: &[&str]) -> Option<usize> {
-    if input.is_empty() {
-        None
-    } else {
-        array.iter().position(|&x| x.to_uppercase() == input.to_uppercase())
-    }
-}
-
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn pattern_display() {
-        assert_eq!(Pattern::new("*/5 * * * *").unwrap().to_string(), "0 0/5 * * * * *");
-        assert_eq!(Pattern::new("0 0/5 * * * * *").unwrap().to_string(), "0 0/5 * * * * *");
-        assert_eq!(Pattern::new("* * * * * * *").unwrap().to_string(), "* * * * * * *");
-        assert_eq!(
-            Pattern::new("0 1 2 3 4 5 2024").unwrap().to_string(),
-            "0 1 2 3 Apr Fri 2024"
-        );
-        assert_eq!(
-            Pattern::new("0 1/2 */3 3 4 5 1970,1980-1990,2000-2050/3")
-                .unwrap()
-                .to_string(),
-            "0 1/2 0/3 3 Apr Fri 1970,1980-1990,2000-2050/3"
-        );
-    }
+    const MAX_YEAR_STR: &str = "2099";
 
-    #[test]
-    fn test_pattern_part_value_display() {
-        assert_eq!(PatternPartValue::Year(2023).to_string(), "2023");
-        assert_eq!(PatternPartValue::Dow(0).to_string(), "Sun");
-        assert_eq!(PatternPartValue::Dow(6).to_string(), "Sat");
-        assert_eq!(PatternPartValue::Month(1).to_string(), "Jan");
-        assert_eq!(PatternPartValue::Month(12).to_string(), "Dec");
-        assert_eq!(PatternPartValue::Dom(15).to_string(), "15");
-        assert_eq!(PatternPartValue::Hour(9).to_string(), "9");
-        assert_eq!(PatternPartValue::Minute(30).to_string(), "30");
-        assert_eq!(PatternPartValue::Second(45).to_string(), "45");
-    }
-
-    #[test]
-    fn test_pattern_part_type_display() {
+    #[rstest]
+    #[case(PatternType::Seconds)]
+    #[case(PatternType::Minutes)]
+    #[case(PatternType::Hours)]
+    #[case(PatternType::Doms)]
+    #[case(PatternType::Months)]
+    #[case(PatternType::Dows)]
+    #[case(PatternType::Years)]
+    fn test_pattern_item_display(#[case] type_: PatternType) {
         let test_cases = vec![
-            (PatternPartType::All, "*"),
-            (PatternPartType::Any, "?"),
-            (PatternPartType::Particular(PatternPartValue::Hour(5)), "5"),
+            (PatternItem::All, "*"),
+            (PatternItem::Any, "?"),
+            (PatternItem::Particular(5), "5"),
             (
-                PatternPartType::List(vec![
-                    PatternPartType::Particular(PatternPartValue::Month(3)),
-                    PatternPartType::Particular(PatternPartValue::Month(1)),
-                ]),
-                "Mar,Jan",
+                PatternItem::List(vec![PatternItem::Particular(3), PatternItem::Particular(1)]),
+                "3,1",
             ),
+            (PatternItem::Range(2, 5), "2-5"),
+            (PatternItem::RepeatingValue(15, 30), "15/30"),
+            (PatternItem::RepeatingRange(0, 30, 5), "0-30/5"),
+            (PatternItem::LastDow(1), "1L"),
+            (PatternItem::LastDom, "L"),
+            (PatternItem::Weekday(15), "15W"),
+            (PatternItem::Sharp(3, 2), "3#2"),
             (
-                PatternPartType::Range(PatternPartValue::Hour(2), PatternPartValue::Hour(5)),
-                "2-5",
-            ),
-            (
-                PatternPartType::RepeatingValue(PatternPartValue::Minute(15), 30),
-                "15/30",
-            ),
-            (
-                PatternPartType::RepeatingRange(PatternPartValue::Second(0), PatternPartValue::Second(30), 5),
-                "0-30/5",
-            ),
-            (PatternPartType::LastDow(PatternPartValue::Dow(1)), "MonL"),
-            (PatternPartType::LastDom, "L"),
-            (PatternPartType::Weekday(PatternPartValue::Dom(15)), "15W"),
-            (PatternPartType::Hash(PatternPartValue::Dow(3), 2), "Wed#2"),
-            (
-                PatternPartType::List(vec![
-                    PatternPartType::Particular(PatternPartValue::Hour(3)),
-                    PatternPartType::Particular(PatternPartValue::Hour(1)),
-                    PatternPartType::Range(PatternPartValue::Hour(2), PatternPartValue::Hour(5)),
-                    PatternPartType::RepeatingValue(PatternPartValue::Hour(12), 3),
-                    PatternPartType::RepeatingRange(PatternPartValue::Hour(10), PatternPartValue::Hour(22), 4),
+                PatternItem::List(vec![
+                    PatternItem::Particular(3),
+                    PatternItem::Particular(1),
+                    PatternItem::Range(2, 5),
+                    PatternItem::RepeatingValue(12, 3),
+                    PatternItem::RepeatingRange(10, 22, 4),
                 ]),
                 "3,1,2-5,12/3,10-22/4",
             ),
         ];
 
-        for (pattern_type, expected) in test_cases {
-            assert_eq!(pattern_type.to_string(), expected);
+        for (item, expected) in test_cases {
+            assert_eq!(item.to_string(), expected);
+            let pattern = Pattern {
+                type_: type_.clone(),
+                pattern: item,
+            };
+            assert_eq!(pattern.to_string(), expected);
+        }
+    }
+
+    #[rstest]
+    #[case(PatternType::Seconds)]
+    #[case(PatternType::Minutes)]
+    fn test_pattern_item_parse_valid_1(#[case] type_: PatternType) {
+        let test_cases = vec![
+            ("*", PatternItem::All),
+            ("5", PatternItem::Particular(5)),
+            (
+                "3,1",
+                PatternItem::List(vec![PatternItem::Particular(3), PatternItem::Particular(1)]),
+            ),
+            ("2-5", PatternItem::Range(2, 5)),
+            ("15/30", PatternItem::RepeatingValue(15, 30)),
+            ("*/10", PatternItem::RepeatingValue(0, 10)),
+            ("0/5", PatternItem::RepeatingValue(0, 5)),
+            ("0-30/5", PatternItem::RepeatingRange(0, 30, 5)),
+            (
+                "3,1,2-5,12/3,10-22/4",
+                PatternItem::List(vec![
+                    PatternItem::Particular(3),
+                    PatternItem::Particular(1),
+                    PatternItem::Range(2, 5),
+                    PatternItem::RepeatingValue(12, 3),
+                    PatternItem::RepeatingRange(10, 22, 4),
+                ]),
+            ),
+        ];
+
+        for (item, expected) in test_cases {
+            let pattern = Pattern::parse(type_.clone(), item);
+            assert!(
+                pattern.is_ok(),
+                "type = {type_:?}, item = {item}, error = {}",
+                pattern.err().unwrap()
+            );
+            let pattern = pattern.unwrap();
+            assert_eq!(pattern.pattern, expected, "item = {item}");
         }
     }
 
     #[test]
-    fn test_capitalize_empty_string() {
-        assert_eq!(capitalize(""), "");
-    }
-
-    #[test]
-    fn test_capitalize_single_char() {
-        assert_eq!(capitalize("a"), "A");
-        assert_eq!(capitalize("z"), "Z");
-    }
-
-    #[test]
-    fn test_capitalize_word() {
-        assert_eq!(capitalize("hello"), "Hello");
-        assert_eq!(capitalize("world"), "World");
-    }
-
-    #[test]
-    fn test_capitalize_already_capitalized() {
-        assert_eq!(capitalize("Hello"), "Hello");
-        assert_eq!(capitalize("WORLD"), "WORLD");
-    }
-
-    #[test]
-    fn test_capitalize_with_numbers() {
-        assert_eq!(capitalize("123abc"), "123abc");
-        assert_eq!(capitalize("a123bc"), "A123bc");
-    }
-
-    #[test]
-    fn test_capitalize_with_special_chars() {
-        assert_eq!(capitalize("@hello"), "@hello");
-        assert_eq!(capitalize("hello!"), "Hello!");
-    }
-
-    #[test]
-    fn test_parse_digital_value_valid_value_within_range() {
-        assert_eq!(parse_digital_value("5", 0, 10), Some(5));
-        assert_eq!(parse_digital_value("0", 0, 10), Some(0));
-        assert_eq!(parse_digital_value("10", 0, 10), Some(10));
-    }
-
-    #[test]
-    fn test_parse_digital_value_value_below_minimum() {
-        assert_eq!(parse_digital_value("5", 10, 20), None);
-    }
-
-    #[test]
-    fn test_parse_digital_value_value_above_maximum() {
-        assert_eq!(parse_digital_value("25", 0, 20), None);
-    }
-
-    #[test]
-    fn test_parse_digital_value_invalid_input() {
-        assert_eq!(parse_digital_value("abc", 0, 10), None);
-        assert_eq!(parse_digital_value("", 0, 10), None);
-        assert_eq!(parse_digital_value("-1", 0, 10), None);
-        assert_eq!(parse_digital_value("1.5", 0, 10), None);
-    }
-
-    #[test]
-    fn test_parse_digital_value_edge_cases() {
-        // Test with min equal to max
-        assert_eq!(parse_digital_value("5", 5, 5), Some(5));
-        assert_eq!(parse_digital_value("4", 5, 5), None);
-        assert_eq!(parse_digital_value("6", 5, 5), None);
-
-        // Test with large valid numbers
-        assert_eq!(parse_digital_value("65535", 0, 65535), Some(65535));
-    }
-
-    #[test]
-    fn test_valid_year() {
-        assert_eq!(PatternPartValue::year("1970").unwrap(), PatternPartValue::Year(1970));
-        assert_eq!(PatternPartValue::year("2099").unwrap(), PatternPartValue::Year(2099));
-        assert_eq!(PatternPartValue::year("2000").unwrap(), PatternPartValue::Year(2000));
-    }
-
-    #[test]
-    fn test_invalid_year() {
-        assert!(matches!(PatternPartValue::year("1969"), Err(Error::InvalidYearValue(e)) if e == "1969"));
-        assert!(matches!(PatternPartValue::year("2100"), Err(Error::InvalidYearValue(e)) if e == "2100"));
-        assert!(matches!(PatternPartValue::year("abc"), Err(Error::InvalidYearValue(e)) if e == "abc"));
-        assert!(matches!(PatternPartValue::year("-1"), Err(Error::InvalidYearValue(e)) if e == "-1"));
-    }
-
-    #[test]
-    fn test_valid_dom() {
-        assert_eq!(PatternPartValue::dom("1").unwrap(), PatternPartValue::Dom(1));
-        assert_eq!(PatternPartValue::dom("12").unwrap(), PatternPartValue::Dom(12));
-        assert_eq!(PatternPartValue::dom("31").unwrap(), PatternPartValue::Dom(31));
-    }
-
-    #[test]
-    fn test_invalid_dom() {
-        assert!(matches!(PatternPartValue::dom("0"), Err(Error::InvalidDayOfMonthValue(e)) if e == "0"));
-        assert!(matches!(PatternPartValue::dom("-1"), Err(Error::InvalidDayOfMonthValue(e)) if e == "-1"));
-        assert!(matches!(PatternPartValue::dom("32"), Err(Error::InvalidDayOfMonthValue(e)) if e == "32"));
-        assert!(matches!(PatternPartValue::dom("256"), Err(Error::InvalidDayOfMonthValue(e)) if e == "256"));
-        assert!(matches!(PatternPartValue::dom("abc"), Err(Error::InvalidDayOfMonthValue(e)) if e == "abc"));
-    }
-
-    #[test]
-    fn test_valid_hour() {
-        assert_eq!(PatternPartValue::hour("0").unwrap(), PatternPartValue::Hour(0));
-        assert_eq!(PatternPartValue::hour("12").unwrap(), PatternPartValue::Hour(12));
-        assert_eq!(PatternPartValue::hour("23").unwrap(), PatternPartValue::Hour(23));
-    }
-
-    #[test]
-    fn test_invalid_hour() {
-        assert!(matches!(PatternPartValue::hour("24"), Err(Error::InvalidHourValue(e)) if e == "24"));
-        assert!(matches!(PatternPartValue::hour("-1"), Err(Error::InvalidHourValue(e)) if e == "-1"));
-        assert!(matches!(PatternPartValue::hour("256"), Err(Error::InvalidHourValue(e)) if e == "256"));
-        assert!(matches!(PatternPartValue::hour("abc"), Err(Error::InvalidHourValue(e)) if e == "abc"));
-    }
-
-    #[test]
-    fn test_valid_minute() {
-        assert_eq!(PatternPartValue::minute("0").unwrap(), PatternPartValue::Minute(0));
-        assert_eq!(PatternPartValue::minute("33").unwrap(), PatternPartValue::Minute(33));
-        assert_eq!(PatternPartValue::minute("59").unwrap(), PatternPartValue::Minute(59));
-    }
-
-    #[test]
-    fn test_invalid_minute() {
-        assert!(matches!(PatternPartValue::minute("60"), Err(Error::InvalidMinuteValue(e)) if e == "60"));
-        assert!(matches!(PatternPartValue::minute("-1"), Err(Error::InvalidMinuteValue(e)) if e == "-1"));
-        assert!(matches!(PatternPartValue::minute("256"), Err(Error::InvalidMinuteValue(e)) if e == "256"));
-        assert!(matches!(PatternPartValue::minute("abc"), Err(Error::InvalidMinuteValue(e)) if e == "abc"));
-    }
-
-    #[test]
-    fn test_valid_second() {
-        assert_eq!(PatternPartValue::second("0").unwrap(), PatternPartValue::Second(0));
-        assert_eq!(PatternPartValue::second("33").unwrap(), PatternPartValue::Second(33));
-        assert_eq!(PatternPartValue::second("59").unwrap(), PatternPartValue::Second(59));
-    }
-
-    #[test]
-    fn test_invalid_second() {
-        assert!(matches!(PatternPartValue::second("60"), Err(Error::InvalidSecondValue(e)) if e == "60"));
-        assert!(matches!(PatternPartValue::second("-1"), Err(Error::InvalidSecondValue(e)) if e == "-1"));
-        assert!(matches!(PatternPartValue::second("256"), Err(Error::InvalidSecondValue(e)) if e == "256"));
-        assert!(matches!(PatternPartValue::second("abc"), Err(Error::InvalidSecondValue(e)) if e == "abc"));
-    }
-
-    #[test]
-    fn test_parse_string_value() {
-        // Test data
-        let test_array = &[
-            "sunday",
-            "monday",
-            "tuesday",
-            "wednesday",
-            "thursday",
-            "friday",
-            "saturday",
+    fn test_pattern_item_parse_valid_dows() {
+        let test_cases = vec![
+            ("*", PatternItem::All),
+            ("?", PatternItem::Any),
+            ("5", PatternItem::Particular(5)),
+            ("Mon", PatternItem::Particular(1)),
+            ("WED", PatternItem::Particular(3)),
+            ("fri", PatternItem::Particular(5)),
+            ("sun#1", PatternItem::Sharp(0, 1)),
+            ("3#2", PatternItem::Sharp(3, 2)),
+            ("4L", PatternItem::LastDow(4)),
+            (
+                "3,1",
+                PatternItem::List(vec![PatternItem::Particular(3), PatternItem::Particular(1)]),
+            ),
+            (
+                "MON,FRI",
+                PatternItem::List(vec![PatternItem::Particular(1), PatternItem::Particular(5)]),
+            ),
+            ("2-5", PatternItem::Range(2, 5)),
+            ("Wed-sat", PatternItem::Range(3, 6)),
+            (
+                "3,1,2-5",
+                PatternItem::List(vec![
+                    PatternItem::Particular(3),
+                    PatternItem::Particular(1),
+                    PatternItem::Range(2, 5),
+                ]),
+            ),
+            (
+                "WEd,mon,tue-fri",
+                PatternItem::List(vec![
+                    PatternItem::Particular(3),
+                    PatternItem::Particular(1),
+                    PatternItem::Range(2, 5),
+                ]),
+            ),
         ];
 
-        // Test valid cases with different casing
-        assert_eq!(parse_string_value("monday", test_array), Some(1));
-        assert_eq!(parse_string_value("FRIDAY", test_array), Some(5));
-        assert_eq!(parse_string_value("SuNdAy", test_array), Some(0));
-
-        // Test first and last elements
-        assert_eq!(parse_string_value("sunday", test_array), Some(0));
-        assert_eq!(parse_string_value("saturday", test_array), Some(6));
-
-        // Test invalid cases
-        assert_eq!(parse_string_value("", test_array), None);
-        assert_eq!(parse_string_value("invalid_day", test_array), None);
-
-        // Test with different array
-        let months = &["jan", "feb", "mar"];
-        assert_eq!(parse_string_value("feb", months), Some(1));
-        assert_eq!(parse_string_value("FEB", months), Some(1));
-        assert_eq!(parse_string_value("dec", months), None);
+        for (item, expected) in test_cases {
+            let pattern = Pattern::parse(PatternType::Dows, item);
+            assert!(pattern.is_ok(), "item = {item}, error = {}", pattern.err().unwrap());
+            let pattern = pattern.unwrap();
+            assert_eq!(pattern.pattern, expected, "item = {item}");
+        }
     }
 
     #[test]
-    fn test_parse_string_value_empty_array() {
-        let empty_array: &[&str] = &[];
-        assert_eq!(parse_string_value("test", empty_array), None);
+    fn test_pattern_item_parse_valid_months() {
+        let test_cases = vec![
+            ("*", PatternItem::All),
+            ("5", PatternItem::Particular(5)),
+            ("Jan", PatternItem::Particular(1)),
+            ("JUN", PatternItem::Particular(6)),
+            ("dec", PatternItem::Particular(12)),
+            (
+                "3,1",
+                PatternItem::List(vec![PatternItem::Particular(3), PatternItem::Particular(1)]),
+            ),
+            (
+                "mar,may",
+                PatternItem::List(vec![PatternItem::Particular(3), PatternItem::Particular(5)]),
+            ),
+            ("2-5", PatternItem::Range(2, 5)),
+            ("auG-DEC", PatternItem::Range(8, 12)),
+            (
+                "3,1,2-5",
+                PatternItem::List(vec![
+                    PatternItem::Particular(3),
+                    PatternItem::Particular(1),
+                    PatternItem::Range(2, 5),
+                ]),
+            ),
+            (
+                "feb,mar,oct-nov",
+                PatternItem::List(vec![
+                    PatternItem::Particular(2),
+                    PatternItem::Particular(3),
+                    PatternItem::Range(10, 11),
+                ]),
+            ),
+            ("2/2", PatternItem::RepeatingValue(2, 2)),
+            ("mar/2", PatternItem::RepeatingValue(3, 2)),
+            ("*/5", PatternItem::RepeatingValue(1, 5)),
+            ("1/6", PatternItem::RepeatingValue(1, 6)),
+            ("apr/6", PatternItem::RepeatingValue(4, 6)),
+            ("1-12/4", PatternItem::RepeatingRange(1, 12, 4)),
+            ("jun-sep/2", PatternItem::RepeatingRange(6, 9, 2)),
+            (
+                "3,1,2-5,2/6,10-12/4,*/4,apR/2",
+                PatternItem::List(vec![
+                    PatternItem::Particular(3),
+                    PatternItem::Particular(1),
+                    PatternItem::Range(2, 5),
+                    PatternItem::RepeatingValue(2, 6),
+                    PatternItem::RepeatingRange(10, 12, 4),
+                    PatternItem::RepeatingValue(1, 4),
+                    PatternItem::RepeatingValue(4, 2),
+                ]),
+            ),
+        ];
+
+        for (item, expected) in test_cases {
+            let pattern = Pattern::parse(PatternType::Months, item);
+            assert!(pattern.is_ok(), "item = {item}, error = {}", pattern.err().unwrap());
+            let pattern = pattern.unwrap();
+            assert_eq!(pattern.pattern, expected, "item = {item}");
+        }
     }
 
     #[test]
-    fn test_parse_string_value_whitespace() {
-        let array = &["test", "value"];
-        assert_eq!(parse_string_value(" test ", array), None);
-        assert_eq!(parse_string_value("\ttest", array), None);
+    fn test_pattern_item_parse_valid_doms() {
+        let test_cases = vec![
+            ("*", PatternItem::All),
+            ("?", PatternItem::Any),
+            ("5", PatternItem::Particular(5)),
+            ("L", PatternItem::LastDom),
+            ("15W", PatternItem::Weekday(15)),
+            (
+                "3,1",
+                PatternItem::List(vec![PatternItem::Particular(3), PatternItem::Particular(1)]),
+            ),
+            ("2-5", PatternItem::Range(2, 5)),
+            ("15/30", PatternItem::RepeatingValue(15, 30)),
+            ("*/10", PatternItem::RepeatingValue(1, 10)),
+            ("1/11", PatternItem::RepeatingValue(1, 11)),
+            ("1-30/5", PatternItem::RepeatingRange(1, 30, 5)),
+            (
+                "3,1,2-5,12/3,10-22/4",
+                PatternItem::List(vec![
+                    PatternItem::Particular(3),
+                    PatternItem::Particular(1),
+                    PatternItem::Range(2, 5),
+                    PatternItem::RepeatingValue(12, 3),
+                    PatternItem::RepeatingRange(10, 22, 4),
+                ]),
+            ),
+        ];
+
+        for (item, expected) in test_cases {
+            let pattern = Pattern::parse(PatternType::Doms, item);
+            assert!(pattern.is_ok(), "item = {item}, error = {}", pattern.err().unwrap());
+            let pattern = pattern.unwrap();
+            assert_eq!(pattern.pattern, expected, "item = {item}");
+        }
     }
 
     #[test]
-    fn test_valid_month_numeric() {
-        assert_eq!(PatternPartValue::month("1").unwrap(), PatternPartValue::Month(1));
-        assert_eq!(PatternPartValue::month("6").unwrap(), PatternPartValue::Month(6));
-        assert_eq!(PatternPartValue::month("12").unwrap(), PatternPartValue::Month(12));
-    }
-    #[test]
-    fn test_valid_month_string() {
-        assert_eq!(PatternPartValue::month("jan").unwrap(), PatternPartValue::Month(1));
-        assert_eq!(PatternPartValue::month("JUN").unwrap(), PatternPartValue::Month(6));
-        assert_eq!(PatternPartValue::month("DeC").unwrap(), PatternPartValue::Month(12));
-    }
+    fn test_pattern_item_parse_valid_year() {
+        let test_cases = vec![
+            ("*", PatternItem::All),
+            ("1975", PatternItem::Particular(1975)),
+            (
+                "2000,2001",
+                PatternItem::List(vec![PatternItem::Particular(2000), PatternItem::Particular(2001)]),
+            ),
+            ("1982-1999", PatternItem::Range(1982, 1999)),
+            ("2015/30", PatternItem::RepeatingValue(2015, 30)),
+            ("*/10", PatternItem::RepeatingValue(1970, 10)),
+            ("2011/11", PatternItem::RepeatingValue(2011, 11)),
+            ("1971-2030/5", PatternItem::RepeatingRange(1971, 2030, 5)),
+            (
+                "2003,2001,2002-2005,2012/3,2010-2022/4",
+                PatternItem::List(vec![
+                    PatternItem::Particular(2003),
+                    PatternItem::Particular(2001),
+                    PatternItem::Range(2002, 2005),
+                    PatternItem::RepeatingValue(2012, 3),
+                    PatternItem::RepeatingRange(2010, 2022, 4),
+                ]),
+            ),
+        ];
 
-    #[test]
-    fn test_invalid_month_numeric() {
-        assert!(matches!(PatternPartValue::month("0"), Err(Error::InvalidMonthValue(e)) if e == "0"));
-        assert!(matches!(PatternPartValue::month("13"), Err(Error::InvalidMonthValue(e)) if e == "13"));
-        assert!(matches!(PatternPartValue::month("-1"), Err(Error::InvalidMonthValue(e)) if e == "-1"));
-        assert!(matches!(PatternPartValue::month("256"), Err(Error::InvalidMonthValue(e)) if e == "256"));
-    }
-
-    #[test]
-    fn test_invalid_month_string() {
-        assert!(matches!(PatternPartValue::month(""), Err(Error::InvalidMonthValue(e)) if e.is_empty()));
-        assert!(matches!(PatternPartValue::month("invalid"), Err(Error::InvalidMonthValue(e)) if e == "invalid"));
-        assert!(matches!(PatternPartValue::month("j@n"), Err(Error::InvalidMonthValue(e)) if e == "j@n"));
-        assert!(matches!(PatternPartValue::month("ja"), Err(Error::InvalidMonthValue(e)) if e == "ja"));
-    }
-
-    #[test]
-    fn test_valid_dow_numeric() {
-        assert_eq!(PatternPartValue::dow("0").unwrap(), PatternPartValue::Dow(0));
-        assert_eq!(PatternPartValue::dow("6").unwrap(), PatternPartValue::Dow(6));
-        assert_eq!(PatternPartValue::dow("3").unwrap(), PatternPartValue::Dow(3));
+        for (item, expected) in test_cases {
+            let pattern = Pattern::parse(PatternType::Years, item);
+            assert!(pattern.is_ok(), "item = {item}, error = {}", pattern.err().unwrap());
+            let pattern = pattern.unwrap();
+            assert_eq!(pattern.pattern, expected, "item = {item}");
+        }
     }
 
-    #[test]
-    fn test_valid_dow_string() {
-        assert_eq!(PatternPartValue::dow("sun").unwrap(), PatternPartValue::Dow(0));
-        assert_eq!(PatternPartValue::dow("MON").unwrap(), PatternPartValue::Dow(1));
-        assert_eq!(PatternPartValue::dow("Sat").unwrap(), PatternPartValue::Dow(6));
+    #[rstest]
+    #[case(PatternType::Seconds, vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/60", "60", "0/1"])]
+    #[case(PatternType::Minutes, vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/60", "60", "0/1"])]
+    #[case(PatternType::Hours,   vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/24", "24", "0/1"])]
+    #[case(PatternType::Doms,    vec!["2-2/2", "5-1/2", "?,4", "*,1", "1-1", "5-1", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/31", "32", "0/1", "0"])]
+    #[case(PatternType::Months,  vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/12", "32", "0/1", "0"])]
+    #[case(PatternType::Dows,    vec!["?, 3", "*,1", "1-1", "5-1", "W", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/2", "7"])]
+    #[case(PatternType::Years,   vec!["1972-1972/2", "2005-2001/2", "*,1", "2001-2001", "2005-2001", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/2", "1969", "2100", "2000/2100"])]
+    fn test_pattern_item_parse_invalid(#[case] type_: PatternType, #[case] input: Vec<&str>) {
+        for item in input {
+            let r = Pattern::parse(type_.clone(), item);
+            assert!(r.is_err(), "type = {type_:?}, pattern = '{item}'");
+        }
     }
 
-    #[test]
-    fn test_invalid_dow_numeric() {
-        assert!(matches!(PatternPartValue::dow("7"), Err(Error::InvalidDayOfWeekValue(e)) if e == "7"));
-        assert!(matches!(PatternPartValue::dow("13"), Err(Error::InvalidDayOfWeekValue(e)) if e == "13"));
-        assert!(matches!(PatternPartValue::dow("-1"), Err(Error::InvalidDayOfWeekValue(e)) if e == "-1"));
-        assert!(matches!(PatternPartValue::dow("256"), Err(Error::InvalidDayOfWeekValue(e)) if e == "256"));
+    #[rstest]
+    #[case(PatternType::Seconds, "0", 0)]
+    #[case(PatternType::Seconds, "33", 33)]
+    #[case(PatternType::Seconds, "59", 59)]
+    #[case(PatternType::Minutes, "0", 0)]
+    #[case(PatternType::Minutes, "33", 33)]
+    #[case(PatternType::Minutes, "59", 59)]
+    #[case(PatternType::Hours, "0", 0)]
+    #[case(PatternType::Hours, "13", 13)]
+    #[case(PatternType::Hours, "23", 23)]
+    #[case(PatternType::Doms, "1", 1)]
+    #[case(PatternType::Doms, "15", 15)]
+    #[case(PatternType::Doms, "31", 31)]
+    #[case(PatternType::Years, MIN_YEAR_STR, MIN_YEAR)]
+    #[case(PatternType::Years, MAX_YEAR_STR, MAX_YEAR)]
+    #[case(PatternType::Years, "1999", 1999)]
+    #[case(PatternType::Years, "2001", 2001)]
+    #[case(PatternType::Months, "1", 1)]
+    #[case(PatternType::Months, "6", 6)]
+    #[case(PatternType::Months, "12", 12)]
+    #[case(PatternType::Months, "Jan", 1)]
+    #[case(PatternType::Months, "JUN", 6)]
+    #[case(PatternType::Months, "dec", 12)]
+    #[case(PatternType::Dows, "0", 0)]
+    #[case(PatternType::Dows, "3", 3)]
+    #[case(PatternType::Dows, "6", 6)]
+    #[case(PatternType::Dows, "Sun", 0)]
+    #[case(PatternType::Dows, "WED", 3)]
+    #[case(PatternType::Dows, "fri", 5)]
+    fn test_parse_valid_pattern_type(
+        #[case] type_: PatternType,
+        #[case] input: &str,
+        #[case] expected: PatternValueType,
+    ) {
+        assert_eq!(type_.parse(input).unwrap(), expected);
     }
 
-    #[test]
-    fn test_invalid_dow_string() {
-        assert!(matches!(PatternPartValue::dow(""), Err(Error::InvalidDayOfWeekValue(e)) if e.is_empty()));
-        assert!(matches!(PatternPartValue::dow("invalid"), Err(Error::InvalidDayOfWeekValue(e)) if e == "invalid"));
-        assert!(matches!(PatternPartValue::dow("we"), Err(Error::InvalidDayOfWeekValue(e)) if e == "we"));
-        assert!(matches!(
-            PatternPartValue::dow("M@n"),
-            Err(Error::InvalidDayOfWeekValue(e)) if e == "M@n"
-        ));
-    }
-
-    #[test]
-    fn test_pattern_part_split_valid_single_values() {
-        // Test All patterns
-        assert_eq!(PatternPart::Seconds.parse("*").unwrap(), PatternPartType::All);
-        assert_eq!(PatternPart::Minutes.parse("*").unwrap(), PatternPartType::All);
-        assert_eq!(PatternPart::Hours.parse("*").unwrap(), PatternPartType::All);
-        assert_eq!(PatternPart::Doms.parse("*").unwrap(), PatternPartType::All);
-        assert_eq!(PatternPart::Months.parse("*").unwrap(), PatternPartType::All);
-        assert_eq!(PatternPart::Dows.parse("*").unwrap(), PatternPartType::All);
-        assert_eq!(PatternPart::Years.parse("*").unwrap(), PatternPartType::All);
-
-        // Test Any pattern
-        assert_eq!(PatternPart::Dows.parse("?").unwrap(), PatternPartType::Any);
-        assert_eq!(PatternPart::Doms.parse("?").unwrap(), PatternPartType::Any);
-
-        // Test RepeatingValue pattern, with *
-        assert_eq!(
-            PatternPart::Seconds.parse("*/5").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Second(0), 5)
-        );
-        assert_eq!(
-            PatternPart::Minutes.parse("*/10").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Minute(0), 10)
-        );
-        assert_eq!(
-            PatternPart::Hours.parse("*/2").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Hour(0), 2)
-        );
-        assert_eq!(
-            PatternPart::Doms.parse("*/3").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Dom(1), 3)
-        );
-        assert_eq!(
-            PatternPart::Months.parse("*/4").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Month(1), 4)
-        );
-        assert_eq!(
-            PatternPart::Years.parse("*/10").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Year(1970), 10)
-        );
-
-        // Test RepeatingValue pattern, with number
-        assert_eq!(
-            PatternPart::Seconds.parse("0/5").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Second(0), 5)
-        );
-        assert_eq!(
-            PatternPart::Minutes.parse("10/10").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Minute(10), 10)
-        );
-        assert_eq!(
-            PatternPart::Hours.parse("5/2").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Hour(5), 2)
-        );
-        assert_eq!(
-            PatternPart::Doms.parse("2/3").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Dom(2), 3)
-        );
-        assert_eq!(
-            PatternPart::Months.parse("3/2").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Month(3), 2)
-        );
-        assert_eq!(
-            PatternPart::Years.parse("2000/5").unwrap(),
-            PatternPartType::RepeatingValue(PatternPartValue::Year(2000), 5)
-        );
-
-        // Test RepeatingRange pattern
-        assert_eq!(
-            PatternPart::Seconds.parse("10-30/5").unwrap(),
-            PatternPartType::RepeatingRange(PatternPartValue::Second(10), PatternPartValue::Second(30), 5)
-        );
-        assert_eq!(
-            PatternPart::Minutes.parse("5-40/10").unwrap(),
-            PatternPartType::RepeatingRange(PatternPartValue::Minute(5), PatternPartValue::Minute(40), 10)
-        );
-        assert_eq!(
-            PatternPart::Hours.parse("0-12/2").unwrap(),
-            PatternPartType::RepeatingRange(PatternPartValue::Hour(0), PatternPartValue::Hour(12), 2)
-        );
-        assert_eq!(
-            PatternPart::Doms.parse("1-15/5").unwrap(),
-            PatternPartType::RepeatingRange(PatternPartValue::Dom(1), PatternPartValue::Dom(15), 5)
-        );
-        assert_eq!(
-            PatternPart::Months.parse("4-10/2").unwrap(),
-            PatternPartType::RepeatingRange(PatternPartValue::Month(4), PatternPartValue::Month(10), 2)
-        );
-        assert_eq!(
-            PatternPart::Months.parse("JAN-AUG/3").unwrap(),
-            PatternPartType::RepeatingRange(PatternPartValue::Month(1), PatternPartValue::Month(8), 3)
-        );
-        assert_eq!(
-            PatternPart::Years.parse("1980-2050/12").unwrap(),
-            PatternPartType::RepeatingRange(PatternPartValue::Year(1980), PatternPartValue::Year(2050), 12)
-        );
-
-        // Test Range pattern
-        assert_eq!(
-            PatternPart::Seconds.parse("10-20").unwrap(),
-            PatternPartType::Range(PatternPartValue::Second(10), PatternPartValue::Second(20))
-        );
-        assert_eq!(
-            PatternPart::Minutes.parse("0-30").unwrap(),
-            PatternPartType::Range(PatternPartValue::Minute(0), PatternPartValue::Minute(30))
-        );
-        assert_eq!(
-            PatternPart::Hours.parse("9-20").unwrap(),
-            PatternPartType::Range(PatternPartValue::Hour(9), PatternPartValue::Hour(20))
-        );
-        assert_eq!(
-            PatternPart::Doms.parse("1-5").unwrap(),
-            PatternPartType::Range(PatternPartValue::Dom(1), PatternPartValue::Dom(5))
-        );
-        assert_eq!(
-            PatternPart::Months.parse("1-6").unwrap(),
-            PatternPartType::Range(PatternPartValue::Month(1), PatternPartValue::Month(6))
-        );
-        assert_eq!(
-            PatternPart::Dows.parse("0-2").unwrap(),
-            PatternPartType::Range(PatternPartValue::Dow(0), PatternPartValue::Dow(2))
-        );
-        assert_eq!(
-            PatternPart::Years.parse("2000-2006").unwrap(),
-            PatternPartType::Range(PatternPartValue::Year(2000), PatternPartValue::Year(2006))
-        );
-
-        // Test Range pattern with mnemonic names
-        assert_eq!(
-            PatternPart::Months.parse("FEB-JUN").unwrap(),
-            PatternPartType::Range(PatternPartValue::Month(2), PatternPartValue::Month(6))
-        );
-        assert_eq!(
-            PatternPart::Dows.parse("MON-WED").unwrap(),
-            PatternPartType::Range(PatternPartValue::Dow(1), PatternPartValue::Dow(3))
-        );
-
-        // Test Hash pattern for day of week
-        assert_eq!(
-            PatternPart::Dows.parse("MON#2").unwrap(),
-            PatternPartType::Hash(PatternPartValue::Dow(1), 2)
-        );
-        assert_eq!(
-            PatternPart::Dows.parse("6#3").unwrap(),
-            PatternPartType::Hash(PatternPartValue::Dow(6), 3)
-        );
-
-        // Test Particular value
-        assert_eq!(
-            PatternPart::Seconds.parse("12").unwrap(),
-            PatternPartType::Particular(PatternPartValue::Second(12))
-        );
-        assert_eq!(
-            PatternPart::Minutes.parse("30").unwrap(),
-            PatternPartType::Particular(PatternPartValue::Minute(30))
-        );
-        assert_eq!(
-            PatternPart::Hours.parse("12").unwrap(),
-            PatternPartType::Particular(PatternPartValue::Hour(12))
-        );
-        assert_eq!(
-            PatternPart::Doms.parse("15").unwrap(),
-            PatternPartType::Particular(PatternPartValue::Dom(15))
-        );
-        assert_eq!(
-            PatternPart::Months.parse("6").unwrap(),
-            PatternPartType::Particular(PatternPartValue::Month(6))
-        );
-        assert_eq!(
-            PatternPart::Months.parse("DEC").unwrap(),
-            PatternPartType::Particular(PatternPartValue::Month(12))
-        );
-        assert_eq!(
-            PatternPart::Dows.parse("3").unwrap(),
-            PatternPartType::Particular(PatternPartValue::Dow(3))
-        );
-        assert_eq!(
-            PatternPart::Dows.parse("FRI").unwrap(),
-            PatternPartType::Particular(PatternPartValue::Dow(5))
-        );
-        assert_eq!(
-            PatternPart::Years.parse("2023").unwrap(),
-            PatternPartType::Particular(PatternPartValue::Year(2023))
-        );
-
-        // Test last and weekday
-        assert_eq!(
-            PatternPart::Dows.parse("4L").unwrap(),
-            PatternPartType::LastDow(PatternPartValue::Dow(4))
-        );
-        assert_eq!(
-            PatternPart::Dows.parse("FriL").unwrap(),
-            PatternPartType::LastDow(PatternPartValue::Dow(5))
-        );
-        assert_eq!(PatternPart::Doms.parse("L").unwrap(), PatternPartType::LastDom);
-        assert_eq!(
-            PatternPart::Doms.parse("22W").unwrap(),
-            PatternPartType::Weekday(PatternPartValue::Dom(22))
+    #[rstest]
+    #[case(PatternType::Seconds, "60")]
+    #[case(PatternType::Seconds, "-1")]
+    #[case(PatternType::Seconds, "256")]
+    #[case(PatternType::Seconds, "abc")]
+    #[case(PatternType::Minutes, "60")]
+    #[case(PatternType::Minutes, "-1")]
+    #[case(PatternType::Minutes, "256")]
+    #[case(PatternType::Minutes, "abc")]
+    #[case(PatternType::Hours, "24")]
+    #[case(PatternType::Hours, "-1")]
+    #[case(PatternType::Hours, "256")]
+    #[case(PatternType::Hours, "abc")]
+    #[case(PatternType::Doms, "0")]
+    #[case(PatternType::Doms, "-12")]
+    #[case(PatternType::Doms, "32")]
+    #[case(PatternType::Doms, "abc")]
+    #[case(PatternType::Years, "1969")]
+    #[case(PatternType::Years, "1900")]
+    #[case(PatternType::Years, "2100")]
+    #[case(PatternType::Years, "-12")]
+    #[case(PatternType::Years, "abc")]
+    #[case(PatternType::Months, "-2")]
+    #[case(PatternType::Months, "0")]
+    #[case(PatternType::Months, "13")]
+    #[case(PatternType::Months, "256")]
+    #[case(PatternType::Months, "abc")]
+    #[case(PatternType::Dows, "-3")]
+    #[case(PatternType::Dows, "7")]
+    #[case(PatternType::Dows, "abc")]
+    #[case(PatternType::Months, "")]
+    #[case(PatternType::Months, "invalid")]
+    #[case(PatternType::Months, "j@n")]
+    #[case(PatternType::Months, "ja")]
+    #[case(PatternType::Dows, "")]
+    #[case(PatternType::Dows, "invalid")]
+    #[case(PatternType::Dows, "we")]
+    #[case(PatternType::Dows, "M@n")]
+    fn test_parse_invalid_pattern_type(#[case] type_: PatternType, #[case] input: &str) {
+        assert!(
+            matches!(type_.parse(input), Err(Error::InvalidDigitalValue(e)) | Err(Error::InvalidMnemonicValue(e)) if e == input)
         );
     }
 
-    #[test]
-    fn test_pattern_part_split_valid_list_values() {
-        // Test comma-separated list
-        assert_eq!(
-            PatternPart::Hours.parse("9,10,11").unwrap(),
-            PatternPartType::List(vec![
-                PatternPartType::Particular(PatternPartValue::Hour(9)),
-                PatternPartType::Particular(PatternPartValue::Hour(10)),
-                PatternPartType::Particular(PatternPartValue::Hour(11))
-            ])
+    #[rstest]
+    // Seconds
+    #[case("00:00:00", "0", PatternType::Seconds, [0])]
+    #[case("00:00:00", "00", PatternType::Seconds, [0])]
+    #[case("00:00:00", "05", PatternType::Seconds, [5])]
+    #[case("00:00:00", "59", PatternType::Seconds, [59])]
+    #[case("00:00:00", "*", PatternType::Seconds, (0..=59).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "*/6", PatternType::Seconds, (0..=59).step_by(6).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "0/2", PatternType::Seconds, (0..=59).step_by(2).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "20/5", PatternType::Seconds, (20..=59).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "30/5", PatternType::Seconds, (30..=59).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "10-30/5", PatternType::Seconds, (10..=30).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "50-59/10", PatternType::Seconds, [50])]
+    #[case("00:00:00", "0-5", PatternType::Seconds, (0..=5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "25-30", PatternType::Seconds, (25..=30).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "12,22,30", PatternType::Seconds, [12,22,30])]
+    #[case("00:00:00", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Seconds, [0,10,12,20,25,26,27,28,29,30,35,40,42,44,45,50,55])]
+    #[case("00:00:22", "0", PatternType::Seconds, [])]
+    #[case("00:00:22", "59", PatternType::Seconds, [59])]
+    #[case("00:00:22", "*", PatternType::Seconds, (22..=59).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:22", "*/6", PatternType::Seconds, (24..=59).step_by(6).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:22", "0/2", PatternType::Seconds, (22..=59).step_by(2).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:22", "20/5", PatternType::Seconds, (25..=59).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:22", "10-30/5", PatternType::Seconds, (25..=30).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:22", "50-59/10", PatternType::Seconds, [50])]
+    #[case("00:00:22", "0-5", PatternType::Seconds, [])]
+    #[case("00:00:22", "25-30", PatternType::Seconds, (25..=30).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:22", "12,22,30", PatternType::Seconds, [22,30])]
+    #[case("00:00:22", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Seconds, [25,26,27,28,29,30,35,40,42,44,45,50,55])]
+    // Minutes
+    #[case("00:00:00", "0", PatternType::Minutes, [0])]
+    #[case("00:00:00", "59", PatternType::Minutes, [59])]
+    #[case("00:00:00", "*", PatternType::Minutes, (0..=59).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "*/6", PatternType::Minutes, (0..=59).step_by(6).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "0/2", PatternType::Minutes, (0..=59).step_by(2).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "20/5", PatternType::Minutes, (20..=59).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "10-30/5", PatternType::Minutes, (10..=30).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "50-59/10", PatternType::Minutes, [50])]
+    #[case("00:00:00", "0-5", PatternType::Minutes, (0..=5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "25-30", PatternType::Minutes, (25..=30).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "12,22,30", PatternType::Minutes, [12,22,30])]
+    #[case("00:00:00", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, [0,10,12,20,25,26,27,28,29,30,35,40,42,44,45,50,55])]
+    #[case("00:00:22", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, [0,10,12,20,25,26,27,28,29,30,35,40,42,44,45,50,55])]
+    #[case("00:22:00", "0", PatternType::Minutes, [])]
+    #[case("00:22:00", "59", PatternType::Minutes, [59])]
+    #[case("00:22:00", "*", PatternType::Minutes, (22..=59).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:22:00", "*/6", PatternType::Minutes, (24..=59).step_by(6).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:22:00", "0/2", PatternType::Minutes, (22..=59).step_by(2).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:22:00", "20/5", PatternType::Minutes, (25..=59).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:22:00", "10-30/5", PatternType::Minutes, (25..=30).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:22:00", "50-59/10", PatternType::Minutes, [50])]
+    #[case("00:22:00", "0-5", PatternType::Minutes, [])]
+    #[case("00:22:00", "25-30", PatternType::Minutes, (25..=30).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:22:00", "12,22,30", PatternType::Minutes, [22,30])]
+    #[case("00:22:00", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, [25,26,27,28,29,30,35,40,42,44,45,50,55])]
+    #[case("00:22:22", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, [25,26,27,28,29,30,35,40,42,44,45,50,55])]
+    // Hours
+    #[case("00:00:00", "0", PatternType::Hours, [0])]
+    #[case("00:00:00", "23", PatternType::Hours, [23])]
+    #[case("00:00:00", "*", PatternType::Hours, (0..=23).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "*/6", PatternType::Hours, (0..=23).step_by(6).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "0/2", PatternType::Hours, (0..=23).step_by(2).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "12/5", PatternType::Hours, (12..=23).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "10-20/5", PatternType::Hours, (10..=20).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "18-23/2", PatternType::Hours, [18,20,22])]
+    #[case("00:00:00", "0-5", PatternType::Hours, (0..=5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "10-15", PatternType::Hours, (10..=15).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("00:00:00", "1,5,15,22,23", PatternType::Hours, [1,5,15,22,23])]
+    #[case("00:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [0,3,4,5,7,8,9,10,11,12,13,14,16,20])]
+    #[case("00:00:22", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [0,3,4,5,7,8,9,10,11,12,13,14,16,20])]
+    #[case("00:22:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [0,3,4,5,7,8,9,10,11,12,13,14,16,20])]
+    #[case("00:22:15", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [0,3,4,5,7,8,9,10,11,12,13,14,16,20])]
+    #[case("05:00:00", "0", PatternType::Hours, [])]
+    #[case("05:00:00", "23", PatternType::Hours, [23])]
+    #[case("05:00:00", "*", PatternType::Hours, (5..=23).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("05:00:00", "*/6", PatternType::Hours, (6..=23).step_by(6).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("05:00:00", "0/2", PatternType::Hours, (6..=23).step_by(2).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("05:00:00", "12/5", PatternType::Hours, (12..=23).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("05:00:00", "10-20/5", PatternType::Hours, (10..=20).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("05:00:00", "18-23/2", PatternType::Hours, [18,20,22])]
+    #[case("05:00:00", "0-5", PatternType::Hours, [5])]
+    #[case("05:00:00", "10-15", PatternType::Hours, (10..=15).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("05:00:00", "1,5,15,22,23", PatternType::Hours, [5,15,22,23])]
+    #[case("05:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [5,7,8,9,10,11,12,13,14,16,20])]
+    #[case("05:00:35", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [5,7,8,9,10,11,12,13,14,16,20])]
+    #[case("05:33:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [5,7,8,9,10,11,12,13,14,16,20])]
+    #[case("05:29:43", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [5,7,8,9,10,11,12,13,14,16,20])]
+    #[case("12:00:00", "0", PatternType::Hours, [])]
+    #[case("12:00:00", "23", PatternType::Hours, [23])]
+    #[case("12:00:00", "*", PatternType::Hours, (12..=23).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("12:00:00", "*/6", PatternType::Hours, (12..=23).step_by(6).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("12:00:00", "0/2", PatternType::Hours, (12..=23).step_by(2).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("12:00:00", "12/5", PatternType::Hours, (12..=23).step_by(5).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("12:00:00", "10-20/5", PatternType::Hours, [15,20])]
+    #[case("12:00:00", "18-23/2", PatternType::Hours, [18,20,22])]
+    #[case("12:00:00", "0-5", PatternType::Hours, [])]
+    #[case("12:00:00", "10-15", PatternType::Hours, (12..=15).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("12:00:00", "1,5,15,22,23", PatternType::Hours, [15,22,23])]
+    #[case("12:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [12,13,14,16,20])]
+    #[case("12:00:35", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [12,13,14,16,20])]
+    #[case("12:13:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [12,13,14,16,20])]
+    #[case("12:23:59", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [12,13,14,16,20])]
+    #[case("19:00:00", "0", PatternType::Hours, [])]
+    #[case("19:00:00", "23", PatternType::Hours, [23])]
+    #[case("19:00:00", "*", PatternType::Hours, (19..=23).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("19:00:00", "*/6", PatternType::Hours, [])]
+    #[case("19:00:00", "0/2", PatternType::Hours, (20..=23).step_by(2).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("19:00:00", "12/5", PatternType::Hours, [22])]
+    #[case("19:00:00", "10-20/5", PatternType::Hours, [20])]
+    #[case("19:00:00", "18-23/2", PatternType::Hours, [20,22])]
+    #[case("19:00:00", "0-5", PatternType::Hours, [])]
+    #[case("19:00:00", "10-15", PatternType::Hours, [])]
+    #[case("19:00:00", "1,5,15,22,23", PatternType::Hours, [22,23])]
+    #[case("19:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [20])]
+    #[case("19:00:45", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [20])]
+    #[case("19:45:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [20])]
+    #[case("19:45:12", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [20])]
+    #[case("23:00:00", "0", PatternType::Hours, [])]
+    #[case("23:00:00", "23", PatternType::Hours, [23])]
+    #[case("23:00:00", "*", PatternType::Hours, [23])]
+    #[case("23:00:00", "*/6", PatternType::Hours, [])]
+    #[case("23:00:00", "0/2", PatternType::Hours, [])]
+    #[case("23:00:00", "12/5", PatternType::Hours, [])]
+    #[case("23:00:00", "10-20/5", PatternType::Hours, [])]
+    #[case("23:00:00", "18-23/2", PatternType::Hours, [])]
+    #[case("23:00:00", "0-5", PatternType::Hours, [])]
+    #[case("23:00:00", "10-15", PatternType::Hours, [])]
+    #[case("23:00:00", "1,5,15,22,23", PatternType::Hours, [23])]
+    #[case("23:00:19", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [])]
+    #[case("23:29:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [])]
+    #[case("23:33:11", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [])]
+    fn test_iter_starting_from_time_part(
+        #[case] time: &str,
+        #[case] input: &str,
+        #[case] type_: PatternType,
+        #[case] expected: impl Into<Vec<PatternValueType>>,
+    ) {
+        let now = DateTime::parse_from_rfc3339(format!("2024-01-01T{time}Z").as_str()).unwrap();
+
+        let pattern = Pattern::parse(type_.clone(), input);
+        assert!(
+            pattern.is_ok(),
+            "type = {type_:?}, pattern = {input}, error = {}",
+            pattern.err().unwrap()
         );
 
         assert_eq!(
-            PatternPart::Seconds.parse("5,10-20,33/2,*/3,40-59/4").unwrap(),
-            PatternPartType::List(vec![
-                PatternPartType::Particular(PatternPartValue::Second(5)),
-                PatternPartType::Range(PatternPartValue::Second(10), PatternPartValue::Second(20)),
-                PatternPartType::RepeatingValue(PatternPartValue::Second(33), 2),
-                PatternPartType::RepeatingValue(PatternPartValue::Second(0), 3),
-                PatternPartType::RepeatingRange(PatternPartValue::Second(40), PatternPartValue::Second(59), 4),
-            ])
-        );
-
-        assert_eq!(
-            PatternPart::Months.parse("9,JAN,mar,*/2").unwrap(),
-            PatternPartType::List(vec![
-                PatternPartType::Particular(PatternPartValue::Month(9)),
-                PatternPartType::Particular(PatternPartValue::Month(1)),
-                PatternPartType::Particular(PatternPartValue::Month(3)),
-                PatternPartType::RepeatingValue(PatternPartValue::Month(1), 2)
-            ])
-        );
-
-        assert_eq!(
-            PatternPart::Dows.parse("mon,FrI,0").unwrap(),
-            PatternPartType::List(vec![
-                PatternPartType::Particular(PatternPartValue::Dow(1)),
-                PatternPartType::Particular(PatternPartValue::Dow(5)),
-                PatternPartType::Particular(PatternPartValue::Dow(0))
-            ])
-        );
-
-        assert_eq!(
-            PatternPart::Doms.parse("1,5-12,24W,L").unwrap(),
-            PatternPartType::List(vec![
-                PatternPartType::Particular(PatternPartValue::Dom(1)),
-                PatternPartType::Range(PatternPartValue::Dom(5), PatternPartValue::Dom(12)),
-                PatternPartType::Weekday(PatternPartValue::Dom(24)),
-                PatternPartType::LastDom,
-            ])
-        );
-    }
-
-    #[test]
-    fn test_pattern_part_split_invalid_single_values() {
-        // Test invalid single values
-        assert!(PatternPart::Seconds.parse("-1").is_err());
-        assert!(PatternPart::Seconds.parse("60").is_err());
-        assert!(PatternPart::Seconds.parse(" 50").is_err());
-
-        assert!(PatternPart::Minutes.parse("-1").is_err());
-        assert!(PatternPart::Minutes.parse("60").is_err());
-        assert!(PatternPart::Minutes.parse(" 20").is_err());
-
-        assert!(PatternPart::Hours.parse("-1").is_err());
-        assert!(PatternPart::Hours.parse("24").is_err());
-        assert!(PatternPart::Hours.parse(" 12").is_err());
-
-        assert!(PatternPart::Doms.parse("-1").is_err());
-        assert!(PatternPart::Doms.parse("0").is_err());
-        assert!(PatternPart::Doms.parse("32").is_err());
-        assert!(PatternPart::Doms.parse(" 5").is_err());
-
-        assert!(PatternPart::Months.parse("-1").is_err());
-        assert!(PatternPart::Months.parse("0").is_err());
-        assert!(PatternPart::Months.parse("13").is_err());
-        assert!(PatternPart::Months.parse(" 6").is_err());
-        assert!(PatternPart::Months.parse("JANUARY").is_err());
-        assert!(PatternPart::Months.parse(" JAN").is_err());
-
-        assert!(PatternPart::Dows.parse("-1").is_err());
-        assert!(PatternPart::Dows.parse("7").is_err());
-        assert!(PatternPart::Dows.parse(" 4").is_err());
-        assert!(PatternPart::Dows.parse("Sunday").is_err());
-        assert!(PatternPart::Dows.parse(" MON").is_err());
-
-        assert!(PatternPart::Years.parse("-1").is_err());
-        assert!(PatternPart::Years.parse("0").is_err());
-        assert!(PatternPart::Years.parse("1969").is_err());
-        assert!(PatternPart::Years.parse("2100").is_err());
-        assert!(PatternPart::Years.parse(" 2023").is_err());
-
-        // Test patterns with invalid ranges
-        assert!(PatternPart::Seconds.parse("10-20-30").is_err());
-        assert!(PatternPart::Seconds.parse("10-").is_err());
-        assert!(PatternPart::Seconds.parse("-20").is_err());
-        assert!(PatternPart::Seconds.parse("abc-20").is_err());
-
-        assert!(PatternPart::Months.parse("feb-jan").is_err());
-        assert!(PatternPart::Months.parse("5-3").is_err());
-        assert!(PatternPart::Months.parse(" 1-3").is_err());
-
-        // Test patterns with invalid repeating values
-        assert!(PatternPart::Hours.parse("*/0").is_err());
-        assert!(PatternPart::Hours.parse("0/0").is_err());
-        assert!(PatternPart::Hours.parse("-1/0").is_err());
-        assert!(PatternPart::Hours.parse("10/1").is_err());
-
-        // Test patterns with invalid repeating ranges
-        assert!(PatternPart::Doms.parse("10-5/2").is_err());
-        assert!(PatternPart::Doms.parse("0-12/0").is_err());
-        assert!(PatternPart::Doms.parse(" 0-12/3").is_err());
-        assert!(PatternPart::Years.parse("1980-2050/0").is_err());
-
-        // Test patterns with invalid hash patterns
-        assert!(PatternPart::Dows.parse("MON#0").is_err());
-        assert!(PatternPart::Dows.parse("MON#").is_err());
-        assert!(PatternPart::Dows.parse("MON#abc").is_err());
-        assert!(PatternPart::Dows.parse("MON#-1").is_err());
-
-        //Test patterns with invalid last day
-        assert!(PatternPart::Dows.parse("MODL").is_err());
-        assert!(PatternPart::Dows.parse("L#2").is_err());
-        assert!(PatternPart::Dows.parse("L#").is_err());
-        assert!(PatternPart::Doms.parse(" L").is_err());
-        assert!(PatternPart::Doms.parse("L ").is_err());
-        assert!(PatternPart::Doms.parse("1L").is_err());
-
-        // Test patterns with invalid question mark
-        assert!(PatternPart::Seconds.parse("?").is_err());
-        assert!(PatternPart::Minutes.parse("?").is_err());
-        assert!(PatternPart::Hours.parse("?").is_err());
-        assert!(PatternPart::Months.parse("?").is_err());
-        assert!(PatternPart::Years.parse("?").is_err());
-    }
-
-    #[test]
-    fn test_pattern_part_split_invalid_list_values() {
-        // Test invalid list values
-        assert!(PatternPart::Seconds.parse("5, 10-20, 33/2, */3, 40-59/4, abc").is_err());
-        assert!(PatternPart::Seconds.parse("5, 10-20, 33/2, */3, 40-59/4, 60").is_err());
-        assert!(PatternPart::Seconds.parse("5, 10-20, 33/2, */3, 40-59/4, -1").is_err());
-
-        assert!(PatternPart::Minutes.parse("30, 45, 60, 75").is_err());
-        assert!(PatternPart::Minutes.parse("30, 45, 60, -1").is_err());
-
-        assert!(PatternPart::Hours.parse("12, 24, 36, abc").is_err());
-        assert!(PatternPart::Hours.parse("12, 24, 36, -1").is_err());
-
-        assert!(PatternPart::Doms.parse("15, 30, 45, 60, abc").is_err());
-        assert!(PatternPart::Doms.parse("15, 30, 45, 60, -1").is_err());
-
-        assert!(PatternPart::Months.parse("6, JAN, mar, */2, abc").is_err());
-        assert!(PatternPart::Months.parse("6, JAN, mar, */2, 13").is_err());
-
-        assert!(PatternPart::Dows.parse("3, mon, Fri, abc").is_err());
-        assert!(PatternPart::Dows.parse("3, mon, Fri, 7").is_err());
-
-        assert!(PatternPart::Dows.parse("1, 5-12, 24W, L, abc").is_err());
-        assert!(PatternPart::Dows.parse("1, 5-12, 24W, L, 8").is_err());
-
-        // Test case with asterisk and other values in the list
-        assert!(PatternPart::Dows.parse("*,1").is_err());
-        assert!(PatternPart::Dows.parse("2,*").is_err());
-        assert!(PatternPart::Dows.parse("?,2").is_err());
-        assert!(PatternPart::Doms.parse("*,1").is_err());
-        assert!(PatternPart::Doms.parse("2,*").is_err());
-        assert!(PatternPart::Doms.parse("?,2").is_err());
-
-        assert!(PatternPart::Seconds.parse(",*").is_err());
-        assert!(PatternPart::Seconds.parse("1,*").is_err());
-        assert!(PatternPart::Years.parse("1977,*").is_err());
-    }
-
-    #[test]
-    fn test_pattern_parsing_valid() {
-        assert_eq!(
-            Pattern::new("0 12 * * *").unwrap(),
-            Pattern {
-                pattern: "0 12 * * *".to_string(),
-                parts: [
-                    PatternPartType::Particular(PatternPartValue::Second(0)),
-                    PatternPartType::Particular(PatternPartValue::Minute(0)),
-                    PatternPartType::Particular(PatternPartValue::Hour(12)),
-                    PatternPartType::All,
-                    PatternPartType::All,
-                    PatternPartType::All,
-                    PatternPartType::All
-                ]
-            }
-        );
-
-        assert_eq!(
-            Pattern::new(
-                "15/5 5-20/2 12,13,22 1-12/2,15W,L 12,JAN,Feb-MAr,Aug/3 mon,fri#4,SatL 2000-2020/2,2050,2060/5"
-            )
-            .unwrap(),
-            Pattern {
-                pattern:
-                    "15/5 5-20/2 12,13,22 1-12/2,15W,L 12,JAN,Feb-MAr,Aug/3 mon,fri#4,SatL 2000-2020/2,2050,2060/5"
-                        .to_string(),
-                parts: [
-                    PatternPartType::RepeatingValue(PatternPartValue::Second(15), 5),
-                    PatternPartType::RepeatingRange(PatternPartValue::Minute(5), PatternPartValue::Minute(20), 2),
-                    PatternPartType::List(vec![
-                        PatternPartType::Particular(PatternPartValue::Hour(12)),
-                        PatternPartType::Particular(PatternPartValue::Hour(13)),
-                        PatternPartType::Particular(PatternPartValue::Hour(22))
-                    ]),
-                    PatternPartType::List(vec![
-                        PatternPartType::RepeatingRange(PatternPartValue::Dom(1), PatternPartValue::Dom(12), 2),
-                        PatternPartType::Weekday(PatternPartValue::Dom(15)),
-                        PatternPartType::LastDom
-                    ]),
-                    PatternPartType::List(vec![
-                        PatternPartType::Particular(PatternPartValue::Month(12)),
-                        PatternPartType::Particular(PatternPartValue::Month(1)),
-                        PatternPartType::Range(PatternPartValue::Month(2), PatternPartValue::Month(3)),
-                        PatternPartType::RepeatingValue(PatternPartValue::Month(8), 3)
-                    ]),
-                    PatternPartType::List(vec![
-                        PatternPartType::Particular(PatternPartValue::Dow(1)),
-                        PatternPartType::Hash(PatternPartValue::Dow(5), 4),
-                        PatternPartType::LastDow(PatternPartValue::Dow(6))
-                    ]),
-                    PatternPartType::List(vec![
-                        PatternPartType::RepeatingRange(PatternPartValue::Year(2000), PatternPartValue::Year(2020), 2),
-                        PatternPartType::Particular(PatternPartValue::Year(2050)),
-                        PatternPartType::RepeatingValue(PatternPartValue::Year(2060), 5)
-                    ])
-                ]
-            }
+            pattern.unwrap().iter_starting_from(&now).collect::<Vec<_>>(),
+            expected.into(),
+            "type = {type_:?}, time = {time}, pattern = {input}"
         );
     }
 
-    #[test]
-    fn test_pattern_part_indexing() {
-        let arr = [1, 2, 3, 4, 5, 6, 7];
+    #[rstest]
+    // Days of month, 2024
+    #[case("2024-01-01", "1", PatternType::Doms, [1])]
+    #[case("2024-01-01", "01", PatternType::Doms, [1])]
+    #[case("2024-01-01", "21", PatternType::Doms, [21])]
+    #[case("2024-01-01", "31", PatternType::Doms, [31])]
+    #[case("2024-01-05", "5", PatternType::Doms, [5])]
+    #[case("2024-01-06", "5", PatternType::Doms, [])]
+    #[case("2024-01-01", "*", PatternType::Doms, (1..=31).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("2024-01-01", "*/5", PatternType::Doms, (1..=31).into_iter().step_by(5).collect::<Vec<PatternValueType>>())]
+    #[case("2024-01-12", "*", PatternType::Doms, (12..=31).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("2024-01-22", "*/5", PatternType::Doms, (26..=31).into_iter().step_by(5).collect::<Vec<PatternValueType>>())]
+    #[case("2024-01-13", "5/5", PatternType::Doms, (15..=31).into_iter().step_by(5).collect::<Vec<PatternValueType>>())]
+    #[case("2024-01-22", "12/3", PatternType::Doms, [24,27,30])]
+    #[case("2024-01-01", "5-10", PatternType::Doms, (5..=10).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("2024-01-01", "15-22/2", PatternType::Doms, (15..=22).into_iter().step_by(2).collect::<Vec<PatternValueType>>())]
+    #[case("2024-01-16", "15-20", PatternType::Doms, (16..=20).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("2024-01-17", "15-22/3", PatternType::Doms, [18,21])]
+    #[case("2024-01-01", "L", PatternType::Doms, [31])]
+    #[case("2024-02-01", "L", PatternType::Doms, [29])]
+    #[case("2024-04-01", "L", PatternType::Doms, [30])]
+    #[case("2021-02-01", "L", PatternType::Doms, [28])]
+    #[case("2024-01-01", "15W", PatternType::Doms, [15])]
+    #[case("2024-01-01", "14W", PatternType::Doms, [15])]
+    #[case("2024-01-01", "13W", PatternType::Doms, [12])]
+    #[case("2024-01-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [1,2,3,6,7,11,15,16,17,19,21,26,31])]
+    #[case("2024-01-21", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [21,26,31])]
+    #[case("2024-02-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [1,2,6,7,11,15,16,17,19,21,26,29])]
+    #[case("2024-02-15", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [15,16,17,19,21,26,29])]
+    #[case("2024-05-01", "7,2,15-19/2,*/5,L,7W", PatternType::Doms, [1,2,6,7,11,15,16,17,19,21,26,31])]
+    #[case("2024-05-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [11,13,15,16,17,19,21,26,31])]
+    #[case("2024-05-31", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [31])]
+    #[case("2024-11-01", "7,2,15-19/2,*/5,L,7W", PatternType::Doms, [1,2,6,7,11,15,16,17,19,21,26,30])]
+    #[case("2024-11-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [11,12,15,16,17,19,21,26,30])]
+    #[case("2024-11-30", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [30])]
+    // Days of month 1999
+    #[case("1999-01-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [1,2,4,6,7,11,15,16,17,19,21,26,31])]
+    #[case("1999-01-21", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [21,26,31])]
+    #[case("1999-02-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [1,2,3,6,7,11,15,16,17,19,21,26,28])]
+    #[case("1999-02-15", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [15,16,17,19,21,26,28])]
+    #[case("1999-05-01", "7,2,15-19/2,*/5,L,7W", PatternType::Doms, [1,2,6,7,11,15,16,17,19,21,26,31])]
+    #[case("1999-05-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [11,12,15,16,17,19,21,26,31])]
+    #[case("1999-05-31", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [31])]
+    #[case("1999-11-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [11,12,15,16,17,19,21,26,30])]
+    #[case("1999-11-30", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [30])]
+    // Months
+    #[case("2024-01-01", "1", PatternType::Months, [1])]
+    #[case("2024-01-01", "01", PatternType::Months, [1])]
+    #[case("2024-02-01", "1", PatternType::Months, [])]
+    #[case("2024-02-01", "12", PatternType::Months, [12])]
+    #[case("2024-01-01", "*", PatternType::Months, (1..=12).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("2024-01-01", "*/3", PatternType::Months, [1,4,7,10])]
+    #[case("2024-05-01", "*/3", PatternType::Months, [7,10])]
+    #[case("2024-03-01", "1/3", PatternType::Months, [4,7,10])]
+    #[case("2024-06-01", "5/2", PatternType::Months, [7,9,11])]
+    #[case("2024-05-01", "2-8", PatternType::Months, [5,6,7,8])]
+    #[case("2024-01-01", "2-5", PatternType::Months, [2,3,4,5])]
+    #[case("2024-01-01", "4,12,1-2,5/3,10-12/2", PatternType::Months, [1,2,4,5,8,10,11,12])]
+    #[case("2024-06-01", "4,12,1-2,5/3,10-12/2", PatternType::Months, [8,10,11,12])]
+    #[case("2024-12-11", "4,12,1-2,5/3,10-12/2", PatternType::Months, [12])]
+    #[case("2024-01-01", "mar/3", PatternType::Months, [3,6,9,12])]
+    #[case("2024-01-01", "jun-aug", PatternType::Months, [6,7,8])]
+    // Years
+    #[case("1970-01-01", "1970", PatternType::Years, [1970])]
+    #[case("1970-01-01", "1971", PatternType::Years, [1971])]
+    #[case("1980-01-01", "1970", PatternType::Years, [])]
+    #[case("1999-01-01", "*", PatternType::Years, (1999..=2099).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("2001-01-01", "*/10", PatternType::Years, (2010..=2099).step_by(10).into_iter().collect::<Vec<PatternValueType>>())]
+    #[case("2001-01-01", "1970-2003", PatternType::Years, [2001,2002,2003])]
+    #[case("1980-01-01", "1970-2000/7", PatternType::Years, [1984,1991,1998])]
+    #[case("2001-01-01", "1970-2000/10", PatternType::Years, [])]
+    #[case("2001-01-01", "1970-2055/10", PatternType::Years, [2010,2020,2030,2040,2050])]
+    #[case("1991-11-11", "*/10,2090-2099/2,1999", PatternType::Years, [1999,2000,2010,2020,2030,2040,2050,2060,2070,2080,2090,2092,2094,2096,2098])]
+    #[case("2027-11-11", "*/10,2090-2099/2,1999", PatternType::Years, [2030,2040,2050,2060,2070,2080,2090,2092,2094,2096,2098])]
+    #[case("2091-02-28", "*/10,2090-2099/2,1999", PatternType::Years, [2092,2094,2096,2098])]
+    // Days of week
+    #[case("1970-01-01", "0", PatternType::Dows, [0])]
+    #[case("1970-01-01", "sun", PatternType::Dows, [0])]
+    #[case("1970-01-01", "mon-fri", PatternType::Dows, [1,2,3,4,5])]
+    #[case("1970-01-01", "2-4", PatternType::Dows, [2,3,4])]
+    #[case("1970-01-01", "*", PatternType::Dows, [0,1,2,3,4,5,6])]
+    #[case("1970-01-01", "6,3", PatternType::Dows, [3,6])]
+    #[case("1999-02-01", "4L", PatternType::Dows, [25])]
+    #[case("1970-01-01", "3#3", PatternType::Dows, [21])]
+    #[case("2024-03-01", "1#1", PatternType::Dows, [4])]
+    #[case("1970-01-01", "1,3-5", PatternType::Dows, [1,3,4,5])]
 
-        assert_eq!(arr[PatternPart::Seconds], 1);
-        assert_eq!(arr[PatternPart::Minutes], 2);
-        assert_eq!(arr[PatternPart::Hours], 3);
-        assert_eq!(arr[PatternPart::Doms], 4);
-        assert_eq!(arr[PatternPart::Months], 5);
-        assert_eq!(arr[PatternPart::Dows], 6);
-        assert_eq!(arr[PatternPart::Years], 7);
+    fn test_iter_starting_from_date_part(
+        #[case] date: &str,
+        #[case] input: &str,
+        #[case] type_: PatternType,
+        #[case] expected: impl Into<Vec<PatternValueType>>,
+    ) {
+        let nows = [
+            DateTime::parse_from_rfc3339(format!("{date}T00:00:00Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("{date}T00:15:33Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("{date}T01:00:00Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("{date}T01:29:12Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("{date}T11:59:59Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("{date}T12:00:00Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("{date}T12:13:14Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("{date}T19:00:00Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("{date}T23:00:00Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("{date}T23:59:59Z").as_str()).unwrap(),
+        ];
+
+        let pattern = Pattern::parse(type_.clone(), input);
+        let expected: Vec<PatternValueType> = expected.into();
+
+        assert!(
+            pattern.is_ok(),
+            "type = {type_:?}, pattern = {input}, error = {}",
+            pattern.err().unwrap()
+        );
+
+        for now in nows {
+            assert_eq!(
+                &pattern.as_ref().unwrap().iter_starting_from(&now).collect::<Vec<_>>(),
+                &expected,
+                "type = {type_:?}, time = {now}, pattern = {input}",
+                now = now.to_rfc3339()
+            );
+        }
     }
 }
