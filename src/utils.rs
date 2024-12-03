@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use crate::pattern::PatternValueType;
 
 pub(crate) fn parse_digital_value(
@@ -98,10 +100,10 @@ pub(crate) fn nth_dow(
 
     let mut day = 1 + (n - 1) * 7;
 
-    if first_dow > dow {
-        day += 7 - (first_dow - dow);
-    } else if first_dow < dow {
-        day += dow - first_dow;
+    match first_dow.cmp(&dow) {
+        Ordering::Greater => day += 7 - (first_dow - dow),
+        Ordering::Less => day += dow - first_dow,
+        Ordering::Equal => {}
     }
 
     if day > days_in_month(year, month) {

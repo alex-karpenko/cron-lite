@@ -115,6 +115,4 @@ impl Display for Schedule {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-}
+mod tests {}
