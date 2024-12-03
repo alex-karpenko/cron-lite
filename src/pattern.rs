@@ -176,11 +176,18 @@ impl Pattern {
             PatternItem::RepeatingRange(min, max, step) => SeriesWithStep::new(*min, *max, *step, *min)
                 .filter(|v| *v >= start)
                 .collect(),
-            PatternItem::LastDow(dow) => BTreeSet::from([utils::last_dow(
-                start_date.year() as PatternValueType,
-                start_date.month() as PatternValueType,
-                *dow,
-            )]),
+            PatternItem::LastDow(dow) => {
+                let last_dow = utils::last_dow(
+                    start_date.year() as PatternValueType,
+                    start_date.month() as PatternValueType,
+                    *dow,
+                );
+                if last_dow >= start_date.day() as PatternValueType {
+                    BTreeSet::from([last_dow])
+                } else {
+                    BTreeSet::new()
+                }
+            }
             PatternItem::LastDom => BTreeSet::from([utils::days_in_month(
                 start_date.year() as PatternValueType,
                 start_date.month() as PatternValueType,
@@ -197,12 +204,19 @@ impl Pattern {
                     BTreeSet::new()
                 }
             }
-            PatternItem::Sharp(dow, number) => BTreeSet::from([utils::nth_dow(
-                start_date.year() as PatternValueType,
-                start_date.month() as PatternValueType,
-                *dow,
-                *number,
-            )]),
+            PatternItem::Sharp(dow, number) => {
+                let d = utils::nth_dow(
+                    start_date.year() as PatternValueType,
+                    start_date.month() as PatternValueType,
+                    *dow,
+                    *number,
+                );
+                if d >= start_date.day() as PatternValueType {
+                    BTreeSet::from([d])
+                } else {
+                    BTreeSet::new()
+                }
+            }
             PatternItem::Any => unreachable!(),
         };
 
@@ -933,8 +947,13 @@ mod tests {
     #[case("1970-01-01", "*", PatternType::Dows, [0,1,2,3,4,5,6])]
     #[case("1970-01-01", "6,3", PatternType::Dows, [3,6])]
     #[case("1999-02-01", "4L", PatternType::Dows, [25])]
+    #[case("2020-02-01", "6L", PatternType::Dows, [29])]
+    #[case("2020-03-29", "6L", PatternType::Dows, [])]
     #[case("1970-01-01", "3#3", PatternType::Dows, [21])]
     #[case("2024-03-01", "1#1", PatternType::Dows, [4])]
+    #[case("2020-02-01", "6#4", PatternType::Dows, [22])]
+    #[case("2020-02-23", "6#4", PatternType::Dows, [])]
+    #[case("2020-03-29", "6#4", PatternType::Dows, [])]
     #[case("1970-01-01", "1,3-5", PatternType::Dows, [1,3,4,5])]
 
     fn test_iter_starting_from_date_part(
