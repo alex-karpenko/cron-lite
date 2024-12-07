@@ -1,6 +1,5 @@
-use std::cmp::Ordering;
-
 use crate::pattern::PatternValueType;
+use std::cmp::Ordering;
 
 pub(crate) fn parse_digital_value(
     input: &str,
@@ -27,14 +26,6 @@ pub(crate) fn parse_string_value(input: &str, values: &[&str]) -> Option<Pattern
             .iter()
             .position(|&x| x.to_uppercase() == input.to_uppercase())
             .map(|i| i as PatternValueType)
-    }
-}
-
-pub(crate) fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
     }
 }
 
@@ -149,41 +140,7 @@ pub(crate) fn nearest_weekday(
 mod tests {
     use super::*;
     use rstest::rstest;
-
-    #[test]
-    fn capitalize_empty_string() {
-        assert_eq!(capitalize(""), "");
-    }
-
-    #[test]
-    fn capitalize_single_char() {
-        assert_eq!(capitalize("a"), "A");
-        assert_eq!(capitalize("z"), "Z");
-    }
-
-    #[test]
-    fn capitalize_word() {
-        assert_eq!(capitalize("hello"), "Hello");
-        assert_eq!(capitalize("world"), "World");
-    }
-
-    #[test]
-    fn capitalize_already_capitalized() {
-        assert_eq!(capitalize("Hello"), "Hello");
-        assert_eq!(capitalize("WORLD"), "WORLD");
-    }
-
-    #[test]
-    fn capitalize_with_numbers() {
-        assert_eq!(capitalize("123abc"), "123abc");
-        assert_eq!(capitalize("a123bc"), "A123bc");
-    }
-
-    #[test]
-    fn capitalize_with_special_chars() {
-        assert_eq!(capitalize("@hello"), "@hello");
-        assert_eq!(capitalize("hello!"), "Hello!");
-    }
+    use std::time::Duration;
 
     #[test]
     fn parse_digital_value_valid_value_within_range() {
@@ -395,6 +352,7 @@ mod tests {
     // Test edge cases
     #[case(2000, 2, 0, 27)] // Last Sunday of February in century leap year
     #[case(1900, 2, 0, 25)] // Last Sunday of February in non-leap century year
+    #[timeout(Duration::from_secs(1))]
     fn test_last_dow(
         #[case] y: PatternValueType,
         #[case] m: PatternValueType,

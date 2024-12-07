@@ -4,7 +4,7 @@ authors = ["Oleksii Karpenko <alexkarpenko@yahoo.com>"]
 categories = ["date-and-time", "parser-implementations"]
 description = "Lightweight cron expression parser and timeseries generator"
 edition = "2021"
-rust-version = "1.61"
+rust-version = "1.66"
 homepage = "https://github.com/alex-karpenko/cron-light"
 keywords = ["time", "cron", "schedule", "repeat", "periodic"]
 license = "MIT"
@@ -14,8 +14,8 @@ version = "0.1.0"
 exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".gitignore", "mutants.*/**"]
 
 [dependencies]
-chrono = { version = "0.4.38", default-features = false, features = ["std", "now"] }
-thiserror = "2.0.3"
+chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
+thiserror = "2.0"
 
 [dev-dependencies]
 rstest = { version = "0.23.0", default-features = false }

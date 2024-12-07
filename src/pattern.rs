@@ -1,14 +1,11 @@
 use crate::{
+    schedule::{MAX_YEAR, MIN_YEAR, MIN_YEAR_STR},
     series::SeriesWithStep,
     utils::{self, days_in_month},
     Error, Result,
 };
 use chrono::{DateTime, Datelike, TimeZone, Timelike};
 use std::{collections::BTreeSet, fmt::Display};
-
-const MIN_YEAR: u16 = 1970;
-const MIN_YEAR_STR: &str = "1970";
-const MAX_YEAR: u16 = 2099;
 
 pub(crate) type PatternValueType = u16;
 
@@ -19,6 +16,10 @@ pub(crate) struct Pattern {
 }
 
 impl Pattern {
+    pub(crate) fn pattern(&self) -> &PatternItem {
+        &self.pattern
+    }
+
     pub(crate) fn parse(type_: PatternType, input: &str) -> Result<Self> {
         if input.is_empty() {
             return Err(Error::InvalidCronPattern(input.to_owned()));
@@ -89,7 +90,7 @@ impl Pattern {
                     if number.is_none() {
                         return Err(Error::InvalidDayOfWeekValue(value.to_owned()));
                     }
-                    Ok(PatternItem::Sharp(type_.parse(dow)?, number.unwrap()))
+                    Ok(PatternItem::Hash(type_.parse(dow)?, number.unwrap()))
                 } else {
                     Ok(PatternItem::Particular(type_.parse(value)?))
                 }
@@ -120,107 +121,139 @@ impl Pattern {
         Ok(Self { type_, pattern })
     }
 
-    pub(crate) fn iter_starting_from<Tz: TimeZone>(
-        &self,
-        start_date: &DateTime<Tz>,
-    ) -> impl Iterator<Item = PatternValueType> {
-        let (min, max) = self.type_.min_max();
-        let max = if self.type_ == PatternType::Doms {
-            days_in_month(
-                start_date.year() as PatternValueType,
-                start_date.month() as PatternValueType,
-            )
+    pub(crate) fn next<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<PatternValueType> {
+        let max = if self.type_ == PatternType::Doms || self.type_ == PatternType::Dows {
+            days_in_month(current.year() as PatternValueType, current.month() as PatternValueType)
         } else {
+            let (_min, max) = self.type_.min_max();
             max
         };
 
         let start = match self.type_ {
-            PatternType::Seconds => start_date.second() as PatternValueType,
-            PatternType::Minutes => start_date.minute() as PatternValueType,
-            PatternType::Hours => start_date.hour() as PatternValueType,
-            PatternType::Doms => start_date.day() as PatternValueType,
-            PatternType::Months => start_date.month() as PatternValueType,
-            PatternType::Dows => 0,
-            PatternType::Years => start_date.year() as PatternValueType,
+            PatternType::Seconds => current.second() as PatternValueType,
+            PatternType::Minutes => current.minute() as PatternValueType,
+            PatternType::Hours => current.hour() as PatternValueType,
+            PatternType::Doms => current.day() as PatternValueType,
+            PatternType::Months => current.month() as PatternValueType,
+            PatternType::Dows => current.day() as PatternValueType,
+            PatternType::Years => current.year() as PatternValueType,
         };
 
-        let series: BTreeSet<PatternValueType> = match &self.pattern {
+        let value: Option<PatternValueType> = match &self.pattern {
             PatternItem::List(values) => {
-                let mut result = BTreeSet::new();
+                let mut min: Option<PatternValueType> = None;
+
                 for pattern in values {
                     let item = Self {
                         type_: self.type_.clone(),
                         pattern: pattern.clone(),
                     };
-                    let item_series = item.iter_starting_from(start_date).collect::<Vec<PatternValueType>>();
-                    result.extend(item_series);
+                    if let Some(next) = item.next(current) {
+                        if let Some(prev) = min {
+                            if next < prev {
+                                min = Some(next);
+                            }
+                        } else {
+                            min = Some(next)
+                        }
+                    }
                 }
-                result
+                min
             }
-            PatternItem::All => SeriesWithStep::new(min, max, 1, start).collect(),
-            PatternItem::Particular(value) => {
-                if *value >= start {
-                    BTreeSet::from([*value])
+            PatternItem::All => Some(start),
+            PatternItem::Particular(value) if self.type_ != PatternType::Dows => {
+                if *value >= start && *value <= max {
+                    Some(*value)
                 } else {
-                    BTreeSet::new()
+                    None
                 }
             }
-            PatternItem::Range(min, max) => SeriesWithStep::new(*min, *max, 1, *min)
-                .filter(|v| *v >= start)
-                .collect(),
+            PatternItem::Particular(value) if self.type_ == PatternType::Dows => (start..=max).find(|&day| {
+                utils::day_of_week(
+                    current.year() as PatternValueType,
+                    current.month() as PatternValueType,
+                    day,
+                ) == *value
+            }),
+            PatternItem::Range(begin, end) if self.type_ != PatternType::Dows => {
+                SeriesWithStep::new(*begin, *end, 1, *begin)
+                    .filter(|v| *v >= start)
+                    .collect::<BTreeSet<_>>()
+                    .first()
+                    .filter(|v| **v >= start && **v <= max)
+                    .copied()
+            }
+            PatternItem::Range(first_dow, last_dow) if self.type_ == PatternType::Dows => (start..=max).find(|&day| {
+                let dow = utils::day_of_week(
+                    current.year() as PatternValueType,
+                    current.month() as PatternValueType,
+                    day,
+                );
+                dow >= *first_dow && dow <= *last_dow
+            }),
             PatternItem::RepeatingValue(range_start, step) => {
                 SeriesWithStep::new(*range_start, max, *step, *range_start)
                     .filter(|v| *v >= start)
-                    .collect()
+                    .collect::<BTreeSet<_>>()
+                    .first()
+                    .copied()
             }
+
             PatternItem::RepeatingRange(min, max, step) => SeriesWithStep::new(*min, *max, *step, *min)
                 .filter(|v| *v >= start)
-                .collect(),
+                .collect::<BTreeSet<_>>()
+                .first()
+                .copied(),
             PatternItem::LastDow(dow) => {
                 let last_dow = utils::last_dow(
-                    start_date.year() as PatternValueType,
-                    start_date.month() as PatternValueType,
+                    current.year() as PatternValueType,
+                    current.month() as PatternValueType,
                     *dow,
                 );
-                if last_dow >= start_date.day() as PatternValueType {
-                    BTreeSet::from([last_dow])
+                if last_dow >= current.day() as PatternValueType {
+                    Some(last_dow)
                 } else {
-                    BTreeSet::new()
+                    None
                 }
             }
-            PatternItem::LastDom => BTreeSet::from([utils::days_in_month(
-                start_date.year() as PatternValueType,
-                start_date.month() as PatternValueType,
-            )]),
+            PatternItem::LastDom => Some(utils::days_in_month(
+                current.year() as PatternValueType,
+                current.month() as PatternValueType,
+            )),
             PatternItem::Weekday(dom) => {
                 let weekday = utils::nearest_weekday(
-                    start_date.year() as PatternValueType,
-                    start_date.month() as PatternValueType,
+                    current.year() as PatternValueType,
+                    current.month() as PatternValueType,
                     *dom,
                 );
                 if weekday >= start {
-                    BTreeSet::from([weekday])
+                    Some(weekday)
                 } else {
-                    BTreeSet::new()
+                    None
                 }
             }
-            PatternItem::Sharp(dow, number) => {
-                let d = utils::nth_dow(
-                    start_date.year() as PatternValueType,
-                    start_date.month() as PatternValueType,
+            PatternItem::Hash(dow, number) => {
+                let day = utils::nth_dow(
+                    current.year() as PatternValueType,
+                    current.month() as PatternValueType,
                     *dow,
                     *number,
                 );
-                if d >= start_date.day() as PatternValueType {
-                    BTreeSet::from([d])
+                if day >= current.day() as PatternValueType {
+                    Some(day)
                 } else {
-                    BTreeSet::new()
+                    None
                 }
             }
-            PatternItem::Any => unreachable!(),
+            PatternItem::Any => None,
+            _ => unreachable!(),
         };
 
-        series.into_iter()
+        value
+    }
+
+    pub(crate) fn is_global_type(&self) -> bool {
+        matches!(self.pattern, PatternItem::All | PatternItem::Any)
     }
 }
 
@@ -297,7 +330,7 @@ impl PatternType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum PatternItem {
+pub(crate) enum PatternItem {
     All,
     Any,
     Particular(PatternValueType),
@@ -314,7 +347,7 @@ enum PatternItem {
     // month
     Weekday(PatternValueType),
     // weekday#nth
-    Sharp(PatternValueType, PatternValueType),
+    Hash(PatternValueType, PatternValueType),
 }
 
 impl Display for PatternItem {
@@ -335,7 +368,7 @@ impl Display for PatternItem {
                 let values = vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
                 write!(f, "{}", values)
             }
-            PatternItem::Sharp(dow, number) => write!(f, "{}#{}", dow, number),
+            PatternItem::Hash(dow, number) => write!(f, "{}#{}", dow, number),
         }
     }
 }
@@ -344,6 +377,7 @@ impl Display for PatternItem {
 mod tests {
     use super::*;
     use rstest::rstest;
+    use std::time::Duration;
 
     const MAX_YEAR_STR: &str = "2099";
 
@@ -370,7 +404,7 @@ mod tests {
             (PatternItem::LastDow(1), "1L"),
             (PatternItem::LastDom, "L"),
             (PatternItem::Weekday(15), "15W"),
-            (PatternItem::Sharp(3, 2), "3#2"),
+            (PatternItem::Hash(3, 2), "3#2"),
             (
                 PatternItem::List(vec![
                     PatternItem::Particular(3),
@@ -442,8 +476,8 @@ mod tests {
             ("Mon", PatternItem::Particular(1)),
             ("WED", PatternItem::Particular(3)),
             ("fri", PatternItem::Particular(5)),
-            ("sun#1", PatternItem::Sharp(0, 1)),
-            ("3#2", PatternItem::Sharp(3, 2)),
+            ("sun#1", PatternItem::Hash(0, 1)),
+            ("3#2", PatternItem::Hash(3, 2)),
             ("4L", PatternItem::LastDow(4)),
             (
                 "3,1",
@@ -713,254 +747,271 @@ mod tests {
 
     #[rstest]
     // Seconds
-    #[case("00:00:00", "0", PatternType::Seconds, [0])]
-    #[case("00:00:00", "00", PatternType::Seconds, [0])]
-    #[case("00:00:00", "05", PatternType::Seconds, [5])]
-    #[case("00:00:00", "59", PatternType::Seconds, [59])]
-    #[case("00:00:00", "*", PatternType::Seconds, (0..=59).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "*/6", PatternType::Seconds, (0..=59).step_by(6).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "0/2", PatternType::Seconds, (0..=59).step_by(2).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "20/5", PatternType::Seconds, (20..=59).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "30/5", PatternType::Seconds, (30..=59).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "10-30/5", PatternType::Seconds, (10..=30).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "50-59/10", PatternType::Seconds, [50])]
-    #[case("00:00:00", "0-5", PatternType::Seconds, (0..=5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "25-30", PatternType::Seconds, (25..=30).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "12,22,30", PatternType::Seconds, [12,22,30])]
-    #[case("00:00:00", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Seconds, [0,10,12,20,25,26,27,28,29,30,35,40,42,44,45,50,55])]
-    #[case("00:00:22", "0", PatternType::Seconds, [])]
-    #[case("00:00:22", "59", PatternType::Seconds, [59])]
-    #[case("00:00:22", "*", PatternType::Seconds, (22..=59).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:22", "*/6", PatternType::Seconds, (24..=59).step_by(6).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:22", "0/2", PatternType::Seconds, (22..=59).step_by(2).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:22", "20/5", PatternType::Seconds, (25..=59).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:22", "10-30/5", PatternType::Seconds, (25..=30).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:22", "50-59/10", PatternType::Seconds, [50])]
-    #[case("00:00:22", "0-5", PatternType::Seconds, [])]
-    #[case("00:00:22", "25-30", PatternType::Seconds, (25..=30).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:22", "12,22,30", PatternType::Seconds, [22,30])]
-    #[case("00:00:22", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Seconds, [25,26,27,28,29,30,35,40,42,44,45,50,55])]
+    #[case("00:00:00", "0", PatternType::Seconds, Some(0))]
+    #[case("00:00:00", "00", PatternType::Seconds, Some(0))]
+    #[case("00:00:00", "05", PatternType::Seconds, Some(5))]
+    #[case("00:00:00", "59", PatternType::Seconds, Some(59))]
+    #[case("00:00:00", "*", PatternType::Seconds, Some(0))]
+    #[case("00:00:00", "*/6", PatternType::Seconds, Some(0))]
+    #[case("00:00:00", "0/2", PatternType::Seconds, Some(0))]
+    #[case("00:00:00", "20/5", PatternType::Seconds, Some(20))]
+    #[case("00:00:00", "30/5", PatternType::Seconds, Some(30))]
+    #[case("00:00:00", "10-30/5", PatternType::Seconds, Some(10))]
+    #[case("00:00:00", "50-59/10", PatternType::Seconds, Some(50))]
+    #[case("00:00:00", "0-5", PatternType::Seconds, Some(0))]
+    #[case("00:00:00", "25-30", PatternType::Seconds, Some(25))]
+    #[case("00:00:00", "12,22,30", PatternType::Seconds, Some(12))]
+    #[case("00:00:00", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Seconds, Some(0))]
+    #[case("00:00:22", "0", PatternType::Seconds, None)]
+    #[case("00:00:22", "59", PatternType::Seconds, Some(59))]
+    #[case("00:00:22", "*", PatternType::Seconds, Some(22))]
+    #[case("00:00:22", "*/6", PatternType::Seconds, Some(24))]
+    #[case("00:00:22", "0/2", PatternType::Seconds, Some(22))]
+    #[case("00:00:22", "20/5", PatternType::Seconds, Some(25))]
+    #[case("00:00:22", "10-30/5", PatternType::Seconds, Some(25))]
+    #[case("00:00:22", "50-59/10", PatternType::Seconds, Some(50))]
+    #[case("00:00:22", "0-5", PatternType::Seconds, None)]
+    #[case("00:00:22", "25-30", PatternType::Seconds, Some(25))]
+    #[case("00:00:22", "12,22,30", PatternType::Seconds, Some(22))]
+    #[case("00:00:22", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Seconds, Some(25))]
     // Minutes
-    #[case("00:00:00", "0", PatternType::Minutes, [0])]
-    #[case("00:00:00", "59", PatternType::Minutes, [59])]
-    #[case("00:00:00", "*", PatternType::Minutes, (0..=59).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "*/6", PatternType::Minutes, (0..=59).step_by(6).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "0/2", PatternType::Minutes, (0..=59).step_by(2).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "20/5", PatternType::Minutes, (20..=59).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "10-30/5", PatternType::Minutes, (10..=30).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "50-59/10", PatternType::Minutes, [50])]
-    #[case("00:00:00", "0-5", PatternType::Minutes, (0..=5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "25-30", PatternType::Minutes, (25..=30).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "12,22,30", PatternType::Minutes, [12,22,30])]
-    #[case("00:00:00", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, [0,10,12,20,25,26,27,28,29,30,35,40,42,44,45,50,55])]
-    #[case("00:00:22", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, [0,10,12,20,25,26,27,28,29,30,35,40,42,44,45,50,55])]
-    #[case("00:22:00", "0", PatternType::Minutes, [])]
-    #[case("00:22:00", "59", PatternType::Minutes, [59])]
-    #[case("00:22:00", "*", PatternType::Minutes, (22..=59).collect::<Vec<PatternValueType>>())]
-    #[case("00:22:00", "*/6", PatternType::Minutes, (24..=59).step_by(6).collect::<Vec<PatternValueType>>())]
-    #[case("00:22:00", "0/2", PatternType::Minutes, (22..=59).step_by(2).collect::<Vec<PatternValueType>>())]
-    #[case("00:22:00", "20/5", PatternType::Minutes, (25..=59).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:22:00", "10-30/5", PatternType::Minutes, (25..=30).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:22:00", "50-59/10", PatternType::Minutes, [50])]
-    #[case("00:22:00", "0-5", PatternType::Minutes, [])]
-    #[case("00:22:00", "25-30", PatternType::Minutes, (25..=30).collect::<Vec<PatternValueType>>())]
-    #[case("00:22:00", "12,22,30", PatternType::Minutes, [22,30])]
-    #[case("00:22:00", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, [25,26,27,28,29,30,35,40,42,44,45,50,55])]
-    #[case("00:22:22", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, [25,26,27,28,29,30,35,40,42,44,45,50,55])]
+    #[case("00:00:00", "0", PatternType::Minutes, Some(0))]
+    #[case("00:00:00", "59", PatternType::Minutes, Some(59))]
+    #[case("00:00:00", "*", PatternType::Minutes, Some(0))]
+    #[case("00:00:00", "*/6", PatternType::Minutes, Some(0))]
+    #[case("00:00:00", "0/2", PatternType::Minutes, Some(0))]
+    #[case("00:00:00", "20/5", PatternType::Minutes, Some(20))]
+    #[case("00:00:00", "10-30/5", PatternType::Minutes, Some(10))]
+    #[case("00:00:00", "50-59/10", PatternType::Minutes, Some(50))]
+    #[case("00:00:00", "0-5", PatternType::Minutes, Some(0))]
+    #[case("00:00:00", "25-30", PatternType::Minutes, Some(25))]
+    #[case("00:00:00", "12,22,30", PatternType::Minutes, Some(12))]
+    #[case("00:00:00", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, Some(0))]
+    #[case("00:00:22", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, Some(0))]
+    #[case("00:22:00", "0", PatternType::Minutes, None)]
+    #[case("00:22:00", "59", PatternType::Minutes, Some(59))]
+    #[case("00:22:00", "*", PatternType::Minutes, Some(22))]
+    #[case("00:22:00", "*/6", PatternType::Minutes, Some(24))]
+    #[case("00:22:00", "0/2", PatternType::Minutes, Some(22))]
+    #[case("00:22:00", "20/5", PatternType::Minutes, Some(25))]
+    #[case("00:22:00", "10-30/5", PatternType::Minutes, Some(25))]
+    #[case("00:22:00", "50-59/10", PatternType::Minutes, Some(50))]
+    #[case("00:22:00", "0-5", PatternType::Minutes, None)]
+    #[case("00:22:00", "25-30", PatternType::Minutes, Some(25))]
+    #[case("00:22:00", "12,22,30", PatternType::Minutes, Some(22))]
+    #[case("00:22:00", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, Some(25))]
+    #[case("00:22:22", "10,12,20/5,25-30,40-45/2,*/30", PatternType::Minutes, Some(25))]
     // Hours
-    #[case("00:00:00", "0", PatternType::Hours, [0])]
-    #[case("00:00:00", "23", PatternType::Hours, [23])]
-    #[case("00:00:00", "*", PatternType::Hours, (0..=23).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "*/6", PatternType::Hours, (0..=23).step_by(6).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "0/2", PatternType::Hours, (0..=23).step_by(2).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "12/5", PatternType::Hours, (12..=23).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "10-20/5", PatternType::Hours, (10..=20).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "18-23/2", PatternType::Hours, [18,20,22])]
-    #[case("00:00:00", "0-5", PatternType::Hours, (0..=5).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "10-15", PatternType::Hours, (10..=15).collect::<Vec<PatternValueType>>())]
-    #[case("00:00:00", "1,5,15,22,23", PatternType::Hours, [1,5,15,22,23])]
-    #[case("00:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [0,3,4,5,7,8,9,10,11,12,13,14,16,20])]
-    #[case("00:00:22", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [0,3,4,5,7,8,9,10,11,12,13,14,16,20])]
-    #[case("00:22:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [0,3,4,5,7,8,9,10,11,12,13,14,16,20])]
-    #[case("00:22:15", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [0,3,4,5,7,8,9,10,11,12,13,14,16,20])]
-    #[case("05:00:00", "0", PatternType::Hours, [])]
-    #[case("05:00:00", "23", PatternType::Hours, [23])]
-    #[case("05:00:00", "*", PatternType::Hours, (5..=23).collect::<Vec<PatternValueType>>())]
-    #[case("05:00:00", "*/6", PatternType::Hours, (6..=23).step_by(6).collect::<Vec<PatternValueType>>())]
-    #[case("05:00:00", "0/2", PatternType::Hours, (6..=23).step_by(2).collect::<Vec<PatternValueType>>())]
-    #[case("05:00:00", "12/5", PatternType::Hours, (12..=23).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("05:00:00", "10-20/5", PatternType::Hours, (10..=20).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("05:00:00", "18-23/2", PatternType::Hours, [18,20,22])]
-    #[case("05:00:00", "0-5", PatternType::Hours, [5])]
-    #[case("05:00:00", "10-15", PatternType::Hours, (10..=15).collect::<Vec<PatternValueType>>())]
-    #[case("05:00:00", "1,5,15,22,23", PatternType::Hours, [5,15,22,23])]
-    #[case("05:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [5,7,8,9,10,11,12,13,14,16,20])]
-    #[case("05:00:35", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [5,7,8,9,10,11,12,13,14,16,20])]
-    #[case("05:33:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [5,7,8,9,10,11,12,13,14,16,20])]
-    #[case("05:29:43", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [5,7,8,9,10,11,12,13,14,16,20])]
-    #[case("12:00:00", "0", PatternType::Hours, [])]
-    #[case("12:00:00", "23", PatternType::Hours, [23])]
-    #[case("12:00:00", "*", PatternType::Hours, (12..=23).collect::<Vec<PatternValueType>>())]
-    #[case("12:00:00", "*/6", PatternType::Hours, (12..=23).step_by(6).collect::<Vec<PatternValueType>>())]
-    #[case("12:00:00", "0/2", PatternType::Hours, (12..=23).step_by(2).collect::<Vec<PatternValueType>>())]
-    #[case("12:00:00", "12/5", PatternType::Hours, (12..=23).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("12:00:00", "10-20/5", PatternType::Hours, [15,20])]
-    #[case("12:00:00", "18-23/2", PatternType::Hours, [18,20,22])]
-    #[case("12:00:00", "0-5", PatternType::Hours, [])]
-    #[case("12:00:00", "10-15", PatternType::Hours, (12..=15).collect::<Vec<PatternValueType>>())]
-    #[case("12:00:00", "1,5,15,22,23", PatternType::Hours, [15,22,23])]
-    #[case("12:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [12,13,14,16,20])]
-    #[case("12:00:35", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [12,13,14,16,20])]
-    #[case("12:13:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [12,13,14,16,20])]
-    #[case("12:23:59", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [12,13,14,16,20])]
-    #[case("19:00:00", "0", PatternType::Hours, [])]
-    #[case("19:00:00", "23", PatternType::Hours, [23])]
-    #[case("19:00:00", "*", PatternType::Hours, (19..=23).collect::<Vec<PatternValueType>>())]
-    #[case("19:00:00", "*/6", PatternType::Hours, [])]
-    #[case("19:00:00", "0/2", PatternType::Hours, (20..=23).step_by(2).collect::<Vec<PatternValueType>>())]
-    #[case("19:00:00", "12/5", PatternType::Hours, [22])]
-    #[case("19:00:00", "10-20/5", PatternType::Hours, [20])]
-    #[case("19:00:00", "18-23/2", PatternType::Hours, [20,22])]
-    #[case("19:00:00", "0-5", PatternType::Hours, [])]
-    #[case("19:00:00", "10-15", PatternType::Hours, [])]
-    #[case("19:00:00", "1,5,15,22,23", PatternType::Hours, [22,23])]
-    #[case("19:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [20])]
-    #[case("19:00:45", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [20])]
-    #[case("19:45:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [20])]
-    #[case("19:45:12", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [20])]
-    #[case("23:00:00", "0", PatternType::Hours, [])]
-    #[case("23:00:00", "23", PatternType::Hours, [23])]
-    #[case("23:00:00", "*", PatternType::Hours, [23])]
-    #[case("23:00:00", "*/6", PatternType::Hours, [])]
-    #[case("23:00:00", "0/2", PatternType::Hours, [])]
-    #[case("23:00:00", "12/5", PatternType::Hours, [])]
-    #[case("23:00:00", "10-20/5", PatternType::Hours, [])]
-    #[case("23:00:00", "18-23/2", PatternType::Hours, [])]
-    #[case("23:00:00", "0-5", PatternType::Hours, [])]
-    #[case("23:00:00", "10-15", PatternType::Hours, [])]
-    #[case("23:00:00", "1,5,15,22,23", PatternType::Hours, [23])]
-    #[case("23:00:19", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [])]
-    #[case("23:29:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [])]
-    #[case("23:33:11", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, [])]
-    fn test_iter_starting_from_time_part(
+    #[case("00:00:00", "0", PatternType::Hours, Some(0))]
+    #[case("00:00:00", "23", PatternType::Hours, Some(23))]
+    #[case("00:00:00", "*", PatternType::Hours, Some(0))]
+    #[case("00:00:00", "*/6", PatternType::Hours, Some(0))]
+    #[case("00:00:00", "0/2", PatternType::Hours, Some(0))]
+    #[case("00:00:00", "12/5", PatternType::Hours, Some(12))]
+    #[case("00:00:00", "10-20/5", PatternType::Hours, Some(10))]
+    #[case("00:00:00", "18-23/2", PatternType::Hours, Some(18))]
+    #[case("00:00:00", "0-5", PatternType::Hours, Some(0))]
+    #[case("00:00:00", "10-15", PatternType::Hours, Some(10))]
+    #[case("00:00:00", "1,5,15,22,23", PatternType::Hours, Some(1))]
+    #[case("00:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(0))]
+    #[case("00:00:22", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(0))]
+    #[case("00:22:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(0))]
+    #[case("00:22:15", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(0))]
+    #[case("05:00:00", "0", PatternType::Hours, None)]
+    #[case("05:00:00", "23", PatternType::Hours, Some(23))]
+    #[case("05:00:00", "*", PatternType::Hours, Some(5))]
+    #[case("05:00:00", "*/6", PatternType::Hours, Some(6))]
+    #[case("05:00:00", "0/2", PatternType::Hours, Some(6))]
+    #[case("05:00:00", "12/5", PatternType::Hours, Some(12))]
+    #[case("05:00:00", "10-20/5", PatternType::Hours, Some(10))]
+    #[case("05:00:00", "18-23/2", PatternType::Hours, Some(18))]
+    #[case("05:00:00", "0-5", PatternType::Hours, Some(5))]
+    #[case("05:00:00", "10-15", PatternType::Hours, Some(10))]
+    #[case("05:00:00", "1,5,15,22,23", PatternType::Hours, Some(5))]
+    #[case("05:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(5))]
+    #[case("05:00:35", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(5))]
+    #[case("05:33:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(5))]
+    #[case("05:29:43", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(5))]
+    #[case("12:00:00", "0", PatternType::Hours, None)]
+    #[case("12:00:00", "23", PatternType::Hours, Some(23))]
+    #[case("12:00:00", "*", PatternType::Hours, Some(12))]
+    #[case("12:00:00", "*/6", PatternType::Hours, Some(12))]
+    #[case("12:00:00", "0/2", PatternType::Hours, Some(12))]
+    #[case("12:00:00", "12/5", PatternType::Hours, Some(12))]
+    #[case("12:00:00", "10-20/5", PatternType::Hours, Some(15))]
+    #[case("12:00:00", "18-23/2", PatternType::Hours, Some(18))]
+    #[case("12:00:00", "0-5", PatternType::Hours, None)]
+    #[case("12:00:00", "10-15", PatternType::Hours, Some(12))]
+    #[case("12:00:00", "1,5,15,22,23", PatternType::Hours, Some(15))]
+    #[case("12:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(12))]
+    #[case("12:00:35", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(12))]
+    #[case("12:13:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(12))]
+    #[case("12:23:59", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(12))]
+    #[case("19:00:00", "0", PatternType::Hours, None)]
+    #[case("19:00:00", "23", PatternType::Hours, Some(23))]
+    #[case("19:00:00", "*", PatternType::Hours, Some(19))]
+    #[case("19:00:00", "*/6", PatternType::Hours, None)]
+    #[case("19:00:00", "0/2", PatternType::Hours, Some(20))]
+    #[case("19:00:00", "12/5", PatternType::Hours, Some(22))]
+    #[case("19:00:00", "10-20/5", PatternType::Hours, Some(20))]
+    #[case("19:00:00", "18-23/2", PatternType::Hours, Some(20))]
+    #[case("19:00:00", "0-5", PatternType::Hours, None)]
+    #[case("19:00:00", "10-15", PatternType::Hours, None)]
+    #[case("19:00:00", "1,5,15,22,23", PatternType::Hours, Some(22))]
+    #[case("19:00:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(20))]
+    #[case("19:00:45", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(20))]
+    #[case("19:45:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(20))]
+    #[case("19:45:12", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, Some(20))]
+    #[case("23:00:00", "0", PatternType::Hours, None)]
+    #[case("23:00:00", "23", PatternType::Hours, Some(23))]
+    #[case("23:00:00", "*", PatternType::Hours, Some(23))]
+    #[case("23:00:00", "*/6", PatternType::Hours, None)]
+    #[case("23:00:00", "0/2", PatternType::Hours, None)]
+    #[case("23:00:00", "12/5", PatternType::Hours, None)]
+    #[case("23:00:00", "10-20/5", PatternType::Hours, None)]
+    #[case("23:00:00", "18-23/2", PatternType::Hours, None)]
+    #[case("23:00:00", "0-5", PatternType::Hours, None)]
+    #[case("23:00:00", "10-15", PatternType::Hours, None)]
+    #[case("23:00:00", "1,5,15,22,23", PatternType::Hours, Some(23))]
+    #[case("23:00:19", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, None)]
+    #[case("23:29:00", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, None)]
+    #[case("23:33:11", "10,12,20/5,10-14,3-9/2,*/4", PatternType::Hours, None)]
+    fn test_pattern_next_time_part(
         #[case] time: &str,
         #[case] input: &str,
         #[case] type_: PatternType,
-        #[case] expected: impl Into<Vec<PatternValueType>>,
+        #[case] expected: Option<PatternValueType>,
     ) {
-        let now = DateTime::parse_from_rfc3339(format!("2024-01-01T{time}Z").as_str()).unwrap();
+        let nows = [
+            DateTime::parse_from_rfc3339(format!("2024-01-01T{time}Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("2024-02-01T{time}Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("2024-02-29T{time}Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("2023-02-28T{time}Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("1999-05-13T{time}Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("1999-12-31T{time}Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("1970-06-01T{time}Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("1970-06-30T{time}Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("2099-01-01T{time}Z").as_str()).unwrap(),
+            DateTime::parse_from_rfc3339(format!("2099-12-31T{time}Z").as_str()).unwrap(),
+        ];
 
         let pattern = Pattern::parse(type_.clone(), input);
+
         assert!(
             pattern.is_ok(),
             "type = {type_:?}, pattern = {input}, error = {}",
             pattern.err().unwrap()
         );
 
-        assert_eq!(
-            pattern.unwrap().iter_starting_from(&now).collect::<Vec<_>>(),
-            expected.into(),
-            "type = {type_:?}, time = {time}, pattern = {input}"
-        );
+        for now in nows {
+            assert_eq!(
+                pattern.as_ref().unwrap().next(&now),
+                expected,
+                "first: type = {type_:?}, time = {now}, pattern = {input}",
+                now = now.to_rfc3339()
+            );
+        }
     }
 
     #[rstest]
     // Days of month, 2024
-    #[case("2024-01-01", "1", PatternType::Doms, [1])]
-    #[case("2024-01-01", "01", PatternType::Doms, [1])]
-    #[case("2024-01-01", "21", PatternType::Doms, [21])]
-    #[case("2024-01-01", "31", PatternType::Doms, [31])]
-    #[case("2024-01-05", "5", PatternType::Doms, [5])]
-    #[case("2024-01-06", "5", PatternType::Doms, [])]
-    #[case("2024-01-01", "*", PatternType::Doms, (1..=31).collect::<Vec<PatternValueType>>())]
-    #[case("2024-01-01", "*/5", PatternType::Doms, (1..=31).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("2024-01-12", "*", PatternType::Doms, (12..=31).collect::<Vec<PatternValueType>>())]
-    #[case("2024-01-22", "*/5", PatternType::Doms, (26..=31).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("2024-01-13", "5/5", PatternType::Doms, (15..=31).step_by(5).collect::<Vec<PatternValueType>>())]
-    #[case("2024-01-22", "12/3", PatternType::Doms, [24,27,30])]
-    #[case("2024-01-01", "5-10", PatternType::Doms, (5..=10).collect::<Vec<PatternValueType>>())]
-    #[case("2024-01-01", "15-22/2", PatternType::Doms, (15..=22).step_by(2).collect::<Vec<PatternValueType>>())]
-    #[case("2024-01-16", "15-20", PatternType::Doms, (16..=20).collect::<Vec<PatternValueType>>())]
-    #[case("2024-01-17", "15-22/3", PatternType::Doms, [18,21])]
-    #[case("2024-01-01", "L", PatternType::Doms, [31])]
-    #[case("2024-02-01", "L", PatternType::Doms, [29])]
-    #[case("2024-04-01", "L", PatternType::Doms, [30])]
-    #[case("2021-02-01", "L", PatternType::Doms, [28])]
-    #[case("2024-01-01", "15W", PatternType::Doms, [15])]
-    #[case("2024-01-01", "14W", PatternType::Doms, [15])]
-    #[case("2024-01-01", "13W", PatternType::Doms, [12])]
-    #[case("2024-01-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [1,2,3,6,7,11,15,16,17,19,21,26,31])]
-    #[case("2024-01-21", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [21,26,31])]
-    #[case("2024-02-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [1,2,6,7,11,15,16,17,19,21,26,29])]
-    #[case("2024-02-15", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [15,16,17,19,21,26,29])]
-    #[case("2024-05-01", "7,2,15-19/2,*/5,L,7W", PatternType::Doms, [1,2,6,7,11,15,16,17,19,21,26,31])]
-    #[case("2024-05-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [11,13,15,16,17,19,21,26,31])]
-    #[case("2024-05-31", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [31])]
-    #[case("2024-11-01", "7,2,15-19/2,*/5,L,7W", PatternType::Doms, [1,2,6,7,11,15,16,17,19,21,26,30])]
-    #[case("2024-11-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [11,12,15,16,17,19,21,26,30])]
-    #[case("2024-11-30", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [30])]
+    #[case("2024-01-01", "1", PatternType::Doms, Some(1))]
+    #[case("2024-01-01", "01", PatternType::Doms, Some(1))]
+    #[case("2024-01-01", "21", PatternType::Doms, Some(21))]
+    #[case("2024-01-01", "31", PatternType::Doms, Some(31))]
+    #[case("2024-01-05", "5", PatternType::Doms, Some(5))]
+    #[case("2024-01-06", "5", PatternType::Doms, None)]
+    #[case("2024-01-01", "*", PatternType::Doms, Some(1))]
+    #[case("2024-01-01", "*/5", PatternType::Doms, Some(1))]
+    #[case("2024-01-12", "*", PatternType::Doms, Some(12))]
+    #[case("2024-01-22", "*/5", PatternType::Doms, Some(26))]
+    #[case("2024-01-13", "5/5", PatternType::Doms, Some(15))]
+    #[case("2024-01-22", "12/3", PatternType::Doms, Some(24))]
+    #[case("2024-01-01", "5-10", PatternType::Doms, Some(5))]
+    #[case("2024-01-01", "15-22/2", PatternType::Doms, Some(15))]
+    #[case("2024-01-16", "15-20", PatternType::Doms, Some(16))]
+    #[case("2024-01-17", "15-22/3", PatternType::Doms, Some(18))]
+    #[case("2024-01-01", "L", PatternType::Doms, Some(31))]
+    #[case("2024-02-01", "L", PatternType::Doms, Some(29))]
+    #[case("2024-04-01", "L", PatternType::Doms, Some(30))]
+    #[case("2021-02-01", "L", PatternType::Doms, Some(28))]
+    #[case("2024-01-01", "15W", PatternType::Doms, Some(15))]
+    #[case("2024-01-01", "14W", PatternType::Doms, Some(15))]
+    #[case("2024-01-01", "13W", PatternType::Doms, Some(12))]
+    #[case("2024-01-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, Some(1))]
+    #[case("2024-01-21", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, Some(21))]
+    #[case("2024-02-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, Some(1))]
+    #[case("2024-02-15", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, Some(15))]
+    #[case("2024-05-01", "7,2,15-19/2,*/5,L,7W", PatternType::Doms, Some(1))]
+    #[case("2024-05-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(11))]
+    #[case("2024-05-31", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(31))]
+    #[case("2024-11-01", "7,2,15-19/2,*/5,L,7W", PatternType::Doms, Some(1))]
+    #[case("2024-11-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(11))]
+    #[case("2024-11-30", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(30))]
     // Days of month 1999
-    #[case("1999-01-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [1,2,4,6,7,11,15,16,17,19,21,26,31])]
-    #[case("1999-01-21", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [21,26,31])]
-    #[case("1999-02-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [1,2,3,6,7,11,15,16,17,19,21,26,28])]
-    #[case("1999-02-15", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, [15,16,17,19,21,26,28])]
-    #[case("1999-05-01", "7,2,15-19/2,*/5,L,7W", PatternType::Doms, [1,2,6,7,11,15,16,17,19,21,26,31])]
-    #[case("1999-05-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [11,12,15,16,17,19,21,26,31])]
-    #[case("1999-05-31", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [31])]
-    #[case("1999-11-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [11,12,15,16,17,19,21,26,30])]
-    #[case("1999-11-30", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, [30])]
+    #[case("1999-01-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, Some(1))]
+    #[case("1999-01-21", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, Some(21))]
+    #[case("1999-02-01", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, Some(1))]
+    #[case("1999-02-15", "7,2,15-19/2,*/5,L,3W", PatternType::Doms, Some(15))]
+    #[case("1999-05-01", "7,2,15-19/2,*/5,L,7W", PatternType::Doms, Some(1))]
+    #[case("1999-05-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(11))]
+    #[case("1999-05-31", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(31))]
+    #[case("1999-11-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(11))]
+    #[case("1999-11-30", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(30))]
     // Months
-    #[case("2024-01-01", "1", PatternType::Months, [1])]
-    #[case("2024-01-01", "01", PatternType::Months, [1])]
-    #[case("2024-02-01", "1", PatternType::Months, [])]
-    #[case("2024-02-01", "12", PatternType::Months, [12])]
-    #[case("2024-01-01", "*", PatternType::Months, (1..=12).collect::<Vec<PatternValueType>>())]
-    #[case("2024-01-01", "*/3", PatternType::Months, [1,4,7,10])]
-    #[case("2024-05-01", "*/3", PatternType::Months, [7,10])]
-    #[case("2024-03-01", "1/3", PatternType::Months, [4,7,10])]
-    #[case("2024-06-01", "5/2", PatternType::Months, [7,9,11])]
-    #[case("2024-05-01", "2-8", PatternType::Months, [5,6,7,8])]
-    #[case("2024-01-01", "2-5", PatternType::Months, [2,3,4,5])]
-    #[case("2024-01-01", "4,12,1-2,5/3,10-12/2", PatternType::Months, [1,2,4,5,8,10,11,12])]
-    #[case("2024-06-01", "4,12,1-2,5/3,10-12/2", PatternType::Months, [8,10,11,12])]
-    #[case("2024-12-11", "4,12,1-2,5/3,10-12/2", PatternType::Months, [12])]
-    #[case("2024-01-01", "mar/3", PatternType::Months, [3,6,9,12])]
-    #[case("2024-01-01", "jun-aug", PatternType::Months, [6,7,8])]
+    #[case("2024-01-01", "1", PatternType::Months, Some(1))]
+    #[case("2024-01-01", "01", PatternType::Months, Some(1))]
+    #[case("2024-02-01", "1", PatternType::Months, None)]
+    #[case("2024-02-01", "12", PatternType::Months, Some(12))]
+    #[case("2024-01-01", "*", PatternType::Months, Some(1))]
+    #[case("2024-01-01", "*/3", PatternType::Months, Some(1))]
+    #[case("2024-05-01", "*/3", PatternType::Months, Some(7))]
+    #[case("2024-03-01", "1/3", PatternType::Months, Some(4))]
+    #[case("2024-06-01", "5/2", PatternType::Months, Some(7))]
+    #[case("2024-05-01", "2-8", PatternType::Months, Some(5))]
+    #[case("2024-01-01", "2-5", PatternType::Months, Some(2))]
+    #[case("2024-01-01", "4,12,1-2,5/3,10-12/2", PatternType::Months, Some(1))]
+    #[case("2024-06-01", "4,12,1-2,5/3,10-12/2", PatternType::Months, Some(8))]
+    #[case("2024-12-11", "4,12,1-2,5/3,10-12/2", PatternType::Months, Some(12))]
+    #[case("2024-01-01", "mar/3", PatternType::Months, Some(3))]
+    #[case("2024-01-01", "jun-aug", PatternType::Months, Some(6))]
     // Years
-    #[case("1970-01-01", "1970", PatternType::Years, [1970])]
-    #[case("1970-01-01", "1971", PatternType::Years, [1971])]
-    #[case("1980-01-01", "1970", PatternType::Years, [])]
-    #[case("1999-01-01", "*", PatternType::Years, (1999..=2099).collect::<Vec<PatternValueType>>())]
-    #[case("2001-01-01", "*/10", PatternType::Years, (2010..=2099).step_by(10).collect::<Vec<PatternValueType>>())]
-    #[case("2001-01-01", "1970-2003", PatternType::Years, [2001,2002,2003])]
-    #[case("1980-01-01", "1970-2000/7", PatternType::Years, [1984,1991,1998])]
-    #[case("2001-01-01", "1970-2000/10", PatternType::Years, [])]
-    #[case("2001-01-01", "1970-2055/10", PatternType::Years, [2010,2020,2030,2040,2050])]
-    #[case("1991-11-11", "*/10,2090-2099/2,1999", PatternType::Years, [1999,2000,2010,2020,2030,2040,2050,2060,2070,2080,2090,2092,2094,2096,2098])]
-    #[case("2027-11-11", "*/10,2090-2099/2,1999", PatternType::Years, [2030,2040,2050,2060,2070,2080,2090,2092,2094,2096,2098])]
-    #[case("2091-02-28", "*/10,2090-2099/2,1999", PatternType::Years, [2092,2094,2096,2098])]
+    #[case("1970-01-01", "1970", PatternType::Years, Some(1970))]
+    #[case("1970-01-01", "1971", PatternType::Years, Some(1971))]
+    #[case("1980-01-01", "1970", PatternType::Years, None)]
+    #[case("1999-01-01", "*", PatternType::Years, Some(1999))]
+    #[case("2001-01-01", "*/10", PatternType::Years, Some(2010))]
+    #[case("2001-01-01", "1970-2003", PatternType::Years, Some(2001))]
+    #[case("1980-01-01", "1970-2000/7", PatternType::Years, Some(1984))]
+    #[case("2001-01-01", "1970-2000/10", PatternType::Years, None)]
+    #[case("2001-01-01", "1970-2055/10", PatternType::Years, Some(2010))]
+    #[case("1991-11-11", "*/10,2090-2099/2,1999", PatternType::Years, Some(1999))]
+    #[case("2027-11-11", "*/10,2090-2099/2,1999", PatternType::Years, Some(2030))]
+    #[case("2091-02-28", "*/10,2090-2099/2,1999", PatternType::Years, Some(2092))]
     // Days of week
-    #[case("1970-01-01", "0", PatternType::Dows, [0])]
-    #[case("1970-01-01", "sun", PatternType::Dows, [0])]
-    #[case("1970-01-01", "mon-fri", PatternType::Dows, [1,2,3,4,5])]
-    #[case("1970-01-01", "2-4", PatternType::Dows, [2,3,4])]
-    #[case("1970-01-01", "*", PatternType::Dows, [0,1,2,3,4,5,6])]
-    #[case("1970-01-01", "6,3", PatternType::Dows, [3,6])]
-    #[case("1999-02-01", "4L", PatternType::Dows, [25])]
-    #[case("2020-02-01", "6L", PatternType::Dows, [29])]
-    #[case("2020-03-29", "6L", PatternType::Dows, [])]
-    #[case("1970-01-01", "3#3", PatternType::Dows, [21])]
-    #[case("2024-03-01", "1#1", PatternType::Dows, [4])]
-    #[case("2020-02-01", "6#4", PatternType::Dows, [22])]
-    #[case("2020-02-23", "6#4", PatternType::Dows, [])]
-    #[case("2020-03-29", "6#4", PatternType::Dows, [])]
-    #[case("1970-01-01", "1,3-5", PatternType::Dows, [1,3,4,5])]
-
-    fn test_iter_starting_from_date_part(
+    #[case("1970-01-01", "0", PatternType::Dows, Some(4))]
+    #[case("1970-02-02", "sun", PatternType::Dows, Some(8))]
+    #[case("1970-03-03", "mon-fri", PatternType::Dows, Some(3))]
+    #[case("1970-01-01", "2-4", PatternType::Dows, Some(1))]
+    #[case("1970-01-01", "*", PatternType::Dows, Some(1))]
+    #[case("1970-01-01", "6,3", PatternType::Dows, Some(3))]
+    #[case("1999-02-01", "4L", PatternType::Dows, Some(25))]
+    #[case("2020-02-01", "6L", PatternType::Dows, Some(29))]
+    #[case("2020-03-29", "6L", PatternType::Dows, None)]
+    #[case("1970-01-01", "3#3", PatternType::Dows, Some(21))]
+    #[case("2024-03-01", "1#1", PatternType::Dows, Some(4))]
+    #[case("2020-02-01", "6#4", PatternType::Dows, Some(22))]
+    #[case("2020-02-23", "6#4", PatternType::Dows, None)]
+    #[case("2020-03-29", "6#4", PatternType::Dows, None)]
+    #[case("1970-01-01", "1,3-5", PatternType::Dows, Some(1))]
+    #[case("1970-01-03", "1,3-5", PatternType::Dows, Some(5))]
+    #[case("1970-01-06", "1,3-5", PatternType::Dows, Some(7))]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_date_part(
         #[case] date: &str,
         #[case] input: &str,
         #[case] type_: PatternType,
-        #[case] expected: impl Into<Vec<PatternValueType>>,
+        #[case] expected: Option<PatternValueType>,
     ) {
         let nows = [
             DateTime::parse_from_rfc3339(format!("{date}T00:00:00Z").as_str()).unwrap(),
@@ -976,7 +1027,6 @@ mod tests {
         ];
 
         let pattern = Pattern::parse(type_.clone(), input);
-        let expected: Vec<PatternValueType> = expected.into();
 
         assert!(
             pattern.is_ok(),
@@ -986,8 +1036,8 @@ mod tests {
 
         for now in nows {
             assert_eq!(
-                &pattern.as_ref().unwrap().iter_starting_from(&now).collect::<Vec<_>>(),
-                &expected,
+                pattern.as_ref().unwrap().next(&now),
+                expected,
                 "type = {type_:?}, time = {now}, pattern = {input}",
                 now = now.to_rfc3339()
             );
