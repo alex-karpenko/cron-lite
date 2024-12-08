@@ -132,10 +132,16 @@ impl Schedule {
                 month = self.month.next(&mut current);
                 year = Some(current.year() as PatternValueType);
                 if month.is_some() {
-                    dom = if self.dow.is_global_type() {
-                        self.dom.next(&mut current)
-                    } else {
-                        self.dow.next(&mut current)
+                    dom = match (self.dom.pattern(), self.dow.pattern()) {
+                        (PatternItem::All, PatternItem::All) => self.dom.next(&mut current),
+                        (PatternItem::All, PatternItem::Any) => self.dom.next(&mut current),
+                        (PatternItem::All, _) => self.dow.next(&mut current),
+                        (PatternItem::Any, PatternItem::All) => self.dow.next(&mut current),
+                        (PatternItem::Any, PatternItem::Any) => unreachable!(),
+                        (PatternItem::Any, _) => self.dow.next(&mut current),
+                        (_, PatternItem::All) => self.dom.next(&mut current),
+                        (_, PatternItem::Any) => self.dom.next(&mut current),
+                        (_, _) => unreachable!(),
                     };
                     year = Some(current.year() as PatternValueType);
                     month = Some(current.month() as PatternValueType);
@@ -458,6 +464,13 @@ mod tests {
     #[case("30 0 0 1 * *", "2024-01-01T00:00:30Z", "2024-01-01T00:00:30+00:00")]
     #[case("30 0 0 1 * *", "2024-01-01T00:00:30.001Z", "2024-02-01T00:00:30+00:00")]
     #[case("25 * * * *", "2024-01-01T00:21:21Z", "2024-01-01T00:25:00+00:00")] // case with increasing current minute
+    #[case("1 2 29-31 * *", "2024-01-01T00:00:21Z", "2024-01-29T02:01:00+00:00")]
+    #[case("1 2 29-31 * *", "2024-01-31T00:00:21Z", "2024-01-31T02:01:00+00:00")]
+    #[case("1 2 29-31 * *", "2024-02-01T00:00:21Z", "2024-02-29T02:01:00+00:00")]
+    #[case("1 2 29-31 * *", "2024-03-31T00:00:21Z", "2024-03-31T02:01:00+00:00")]
+    #[case("1 2 29-31 * *", "2025-01-01T00:00:21Z", "2025-01-29T02:01:00+00:00")]
+    #[case("1 2 29-31 * *", "2025-02-01T00:00:21Z", "2025-03-29T02:01:00+00:00")]
+    #[case("1 2 29-31 * *", "2025-03-31T00:00:21Z", "2025-03-31T02:01:00+00:00")]
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
         let schedule = Schedule::new(pattern).unwrap();
@@ -885,6 +898,19 @@ mod tests {
         assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-04-12T13:13:00+00:00");
         assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-05-12T13:13:00+00:00");
         assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-06-12T13:13:00+00:00");
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_schedule_iter_every_weekday() {
+        let schedule = Schedule::new("13 13 ? * *").unwrap();
+        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
+
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-13T13:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-14T13:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-15T13:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-16T13:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-17T13:13:00+00:00");
     }
 
     #[rstest]

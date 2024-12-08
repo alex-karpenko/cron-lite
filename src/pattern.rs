@@ -4,7 +4,7 @@ use crate::{
     utils::{self, days_in_month},
     Error, Result,
 };
-use chrono::{DateTime, Datelike, Days, Months, TimeDelta, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, TimeZone, Timelike};
 use std::{collections::BTreeSet, fmt::Display};
 
 pub(crate) type PatternValueType = u16;
@@ -177,10 +177,9 @@ impl Pattern {
             }),
             PatternItem::Range(begin, end) if self.type_ != PatternType::Dows => {
                 SeriesWithStep::new(*begin, *end, 1, *begin)
-                    .filter(|v| *v >= start)
+                    .filter(|v| *v >= start && *v <= max)
                     .collect::<BTreeSet<_>>()
                     .first()
-                    .filter(|v| **v >= start && **v <= max)
                     .copied()
             }
             PatternItem::Range(first_dow, last_dow) if self.type_ == PatternType::Dows => (start..=max).find(|&day| {
@@ -250,53 +249,6 @@ impl Pattern {
         };
 
         if let Some(value) = value {
-            // if value < start {
-            //     match self.type_ {
-            //         PatternType::Years => unreachable!(),
-            //         PatternType::Months => {
-            //             let delta = 12 - start + value;
-            //             *current = current
-            //                 .clone()
-            //                 .checked_add_months(Months::new(delta as u32))?
-            //                 .with_day(1)?
-            //                 .with_hour(0)?
-            //                 .with_minute(0)?
-            //                 .with_second(0)?;
-            //         }
-            //         PatternType::Doms | PatternType::Dows => {
-            //             let delta = utils::days_in_month(
-            //                 current.year() as PatternValueType,
-            //                 current.month() as PatternValueType,
-            //             ) - start
-            //                 + value;
-            //             *current = current
-            //                 .clone()
-            //                 .checked_add_days(Days::new(delta as u64))?
-            //                 .with_hour(0)?
-            //                 .with_minute(0)?
-            //                 .with_second(0)?;
-            //         }
-            //         PatternType::Hours => {
-            //             let delta = 24 - start + value;
-            //             *current = current
-            //                 .clone()
-            //                 .checked_add_signed(TimeDelta::hours(delta as i64))?
-            //                 .with_minute(0)?
-            //                 .with_second(0)?;
-            //         }
-            //         PatternType::Minutes => {
-            //             let delta = 60 - start + value;
-            //             *current = current
-            //                 .clone()
-            //                 .checked_add_signed(TimeDelta::minutes(delta as i64))?
-            //                 .with_second(0)?;
-            //         }
-            //         PatternType::Seconds => {
-            //             let delta = 60 - start + value;
-            //             *current = current.clone().checked_add_signed(TimeDelta::seconds(delta as i64))?;
-            //         }
-            //     }
-            // } else
             if value > start {
                 match self.type_ {
                     PatternType::Years => {
@@ -337,10 +289,6 @@ impl Pattern {
         }
 
         value
-    }
-
-    pub(crate) fn is_global_type(&self) -> bool {
-        matches!(self.pattern, PatternItem::All | PatternItem::Any)
     }
 }
 
@@ -1045,6 +993,13 @@ mod tests {
     #[case("1999-05-31", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(31))]
     #[case("1999-11-11", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(11))]
     #[case("1999-11-30", "7,2,15-19/2,*/5,L,12W", PatternType::Doms, Some(30))]
+    //
+    #[case("1999-12-30", "1-31", PatternType::Doms, Some(30))]
+    #[case("1999-12-31", "1-31", PatternType::Doms, Some(31))]
+    #[case("2004-02-27", "1-31", PatternType::Doms, Some(27))]
+    #[case("2004-02-28", "1-31", PatternType::Doms, Some(28))]
+    #[case("2004-02-29", "1-31", PatternType::Doms, Some(29))]
+    #[case("2001-02-28", "1-31", PatternType::Doms, Some(28))]
     // Months
     #[case("2024-01-01", "1", PatternType::Months, Some(1))]
     #[case("2024-01-01", "01", PatternType::Months, Some(1))]
