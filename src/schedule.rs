@@ -831,6 +831,42 @@ mod tests {
     }
 
     #[test]
+    fn test_schedule_iter_every_second() {
+        let schedule = Schedule::new("* * * * * *").unwrap();
+        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
+
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:01+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:02+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:03+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:04+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:05+00:00");
+    }
+
+    #[test]
+    fn test_schedule_iter_every_minute() {
+        let schedule = Schedule::new("* * * * *").unwrap();
+        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
+
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:01:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:02:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:03:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:04:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:05:00+00:00");
+    }
+
+    #[test]
+    fn test_schedule_iter_every_hour() {
+        let schedule = Schedule::new("13 * * * *").unwrap();
+        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T07:01:01+00:00").unwrap());
+
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T07:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T08:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T09:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T10:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T11:13:00+00:00");
+    }
+
+    #[test]
     fn test_schedule_into_iter() {
         let schedule = Schedule::new("0 0 12 * 1 MON 2024").unwrap();
         let mut iter = schedule.into_iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
