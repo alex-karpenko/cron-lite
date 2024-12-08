@@ -73,46 +73,23 @@ impl Schedule {
 
     /// Return time of the upcoming cron event next to provided current.
     pub fn upcoming<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
-        let current = if current.nanosecond() > 0 {
-            &current
+        let mut current = if current.nanosecond() > 0 {
+            current
                 .with_nanosecond(0)
                 .unwrap()
                 .checked_add_signed(TimeDelta::seconds(1))
                 .unwrap()
         } else {
-            current
+            current.clone()
         };
 
-        let mut year = self.year.next(current);
-        let current = current.with_year(year? as i32)?;
-
-        let mut month = self.month.next(&current);
-
-        let mut dom = None;
-        let mut hour = None;
-        let mut minute = None;
-        let mut second = None;
-
-        if month.is_some() {
-            let current = current.with_month(month? as u32)?;
-            dom = if self.dow.is_global_type() {
-                self.dom.next(&current)
-            } else {
-                self.dow.next(&current)
-            };
-            if dom.is_some() {
-                let current = current.with_day(dom? as u32)?;
-                hour = self.hour.next(&current);
-                if hour.is_some() {
-                    let current = current.with_hour(hour? as u32)?;
-                    minute = self.minute.next(&current);
-                    if minute.is_some() {
-                        let current = current.with_minute(minute? as u32)?;
-                        second = self.second.next(&current);
-                    }
-                }
-            }
-        }
+        let mut year = Some(current.year() as PatternValueType);
+        let mut month = Some(current.month() as PatternValueType);
+        let mut dom = Some(current.day() as PatternValueType);
+        let mut hour = Some(current.hour() as PatternValueType);
+        let mut minute = Some(current.minute() as PatternValueType);
+        let mut second = Some(current.second() as PatternValueType);
+        let mut first_iteration = true;
 
         while year.is_none()
             || month.is_none()
@@ -120,7 +97,10 @@ impl Schedule {
             || hour.is_none()
             || minute.is_none()
             || second.is_none()
+            || first_iteration
         {
+            first_iteration = false;
+
             if year.is_none() {
                 return None;
             } else if month.is_none() {
@@ -135,7 +115,7 @@ impl Schedule {
                 inc_minute(&mut year, &mut month, &mut dom, &mut hour, &mut minute, &mut second)?;
             }
 
-            let current = current
+            current = current
                 .timezone()
                 .with_ymd_and_hms(
                     year? as i32,
@@ -147,26 +127,36 @@ impl Schedule {
                 )
                 .unwrap();
 
-            year = self.year.next(&current);
+            year = self.year.next(&mut current);
             if year.is_some() {
-                let current = current.with_year(year? as i32)?;
-                month = self.month.next(&current);
+                month = self.month.next(&mut current);
+                year = Some(current.year() as PatternValueType);
                 if month.is_some() {
-                    let current = current.with_month(month? as u32)?;
                     dom = if self.dow.is_global_type() {
-                        self.dom.next(&current)
+                        self.dom.next(&mut current)
                     } else {
-                        self.dow.next(&current)
+                        self.dow.next(&mut current)
                     };
+                    year = Some(current.year() as PatternValueType);
+                    month = Some(current.month() as PatternValueType);
                     if dom.is_some() {
-                        let current = current.with_day(dom? as u32)?;
-                        hour = self.hour.next(&current);
+                        hour = self.hour.next(&mut current);
+                        year = Some(current.year() as PatternValueType);
+                        month = Some(current.month() as PatternValueType);
+                        dom = Some(current.day() as PatternValueType);
                         if hour.is_some() {
-                            let current = current.with_hour(hour? as u32)?;
-                            minute = self.minute.next(&current);
+                            minute = self.minute.next(&mut current);
+                            year = Some(current.year() as PatternValueType);
+                            month = Some(current.month() as PatternValueType);
+                            dom = Some(current.day() as PatternValueType);
+                            hour = Some(current.hour() as PatternValueType);
                             if minute.is_some() {
-                                let current = current.with_minute(minute? as u32)?;
-                                second = self.second.next(&current);
+                                second = self.second.next(&mut current);
+                                year = Some(current.year() as PatternValueType);
+                                month = Some(current.month() as PatternValueType);
+                                dom = Some(current.day() as PatternValueType);
+                                hour = Some(current.hour() as PatternValueType);
+                                minute = Some(current.minute() as PatternValueType);
                             }
                         }
                     }
@@ -467,6 +457,7 @@ mod tests {
     #[case("30 0 0 1 * *", "2024-01-01T00:00:00Z", "2024-01-01T00:00:30+00:00")]
     #[case("30 0 0 1 * *", "2024-01-01T00:00:30Z", "2024-01-01T00:00:30+00:00")]
     #[case("30 0 0 1 * *", "2024-01-01T00:00:30.001Z", "2024-02-01T00:00:30+00:00")]
+    #[case("25 * * * *", "2024-01-01T00:21:21Z", "2024-01-01T00:25:00+00:00")] // case with increasing current minute
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
         let schedule = Schedule::new(pattern).unwrap();
@@ -817,7 +808,8 @@ mod tests {
         assert_eq!(schedule1, schedule2);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter() {
         let schedule = Schedule::new("0 0 12 * 1 MON 2024").unwrap();
         let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
@@ -830,7 +822,8 @@ mod tests {
         assert_eq!(iter.next(), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_second() {
         let schedule = Schedule::new("* * * * * *").unwrap();
         let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
@@ -842,7 +835,8 @@ mod tests {
         assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:05+00:00");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_minute() {
         let schedule = Schedule::new("* * * * *").unwrap();
         let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
@@ -854,7 +848,8 @@ mod tests {
         assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:05:00+00:00");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_hour() {
         let schedule = Schedule::new("13 * * * *").unwrap();
         let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T07:01:01+00:00").unwrap());
@@ -866,7 +861,34 @@ mod tests {
         assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T11:13:00+00:00");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_schedule_iter_every_day() {
+        let schedule = Schedule::new("22 5 * * *").unwrap();
+        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T04:01:01+00:00").unwrap());
+
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T05:22:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-02T05:22:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-03T05:22:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-04T05:22:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-05T05:22:00+00:00");
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_schedule_iter_every_month() {
+        let schedule = Schedule::new("13 13 12 * *").unwrap();
+        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
+
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-02-12T13:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-03-12T13:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-04-12T13:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-05-12T13:13:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-06-12T13:13:00+00:00");
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_schedule_into_iter() {
         let schedule = Schedule::new("0 0 12 * 1 MON 2024").unwrap();
         let mut iter = schedule.into_iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00").unwrap());

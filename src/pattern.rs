@@ -4,7 +4,7 @@ use crate::{
     utils::{self, days_in_month},
     Error, Result,
 };
-use chrono::{DateTime, Datelike, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, Days, Months, TimeDelta, TimeZone, Timelike};
 use std::{collections::BTreeSet, fmt::Display};
 
 pub(crate) type PatternValueType = u16;
@@ -121,7 +121,7 @@ impl Pattern {
         Ok(Self { type_, pattern })
     }
 
-    pub(crate) fn next<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<PatternValueType> {
+    pub(crate) fn next<Tz: TimeZone>(&self, current: &mut DateTime<Tz>) -> Option<PatternValueType> {
         let max = if self.type_ == PatternType::Doms || self.type_ == PatternType::Dows {
             days_in_month(current.year() as PatternValueType, current.month() as PatternValueType)
         } else {
@@ -133,9 +133,8 @@ impl Pattern {
             PatternType::Seconds => current.second() as PatternValueType,
             PatternType::Minutes => current.minute() as PatternValueType,
             PatternType::Hours => current.hour() as PatternValueType,
-            PatternType::Doms => current.day() as PatternValueType,
+            PatternType::Doms | PatternType::Dows => current.day() as PatternValueType,
             PatternType::Months => current.month() as PatternValueType,
-            PatternType::Dows => current.day() as PatternValueType,
             PatternType::Years => current.year() as PatternValueType,
         };
 
@@ -148,7 +147,8 @@ impl Pattern {
                         type_: self.type_.clone(),
                         pattern: pattern.clone(),
                     };
-                    if let Some(next) = item.next(current) {
+                    let mut current = current.clone();
+                    if let Some(next) = item.next(&mut current) {
                         if let Some(prev) = min {
                             if next < prev {
                                 min = Some(next);
@@ -248,6 +248,93 @@ impl Pattern {
             PatternItem::Any => None,
             _ => unreachable!(),
         };
+
+        if let Some(value) = value {
+            // if value < start {
+            //     match self.type_ {
+            //         PatternType::Years => unreachable!(),
+            //         PatternType::Months => {
+            //             let delta = 12 - start + value;
+            //             *current = current
+            //                 .clone()
+            //                 .checked_add_months(Months::new(delta as u32))?
+            //                 .with_day(1)?
+            //                 .with_hour(0)?
+            //                 .with_minute(0)?
+            //                 .with_second(0)?;
+            //         }
+            //         PatternType::Doms | PatternType::Dows => {
+            //             let delta = utils::days_in_month(
+            //                 current.year() as PatternValueType,
+            //                 current.month() as PatternValueType,
+            //             ) - start
+            //                 + value;
+            //             *current = current
+            //                 .clone()
+            //                 .checked_add_days(Days::new(delta as u64))?
+            //                 .with_hour(0)?
+            //                 .with_minute(0)?
+            //                 .with_second(0)?;
+            //         }
+            //         PatternType::Hours => {
+            //             let delta = 24 - start + value;
+            //             *current = current
+            //                 .clone()
+            //                 .checked_add_signed(TimeDelta::hours(delta as i64))?
+            //                 .with_minute(0)?
+            //                 .with_second(0)?;
+            //         }
+            //         PatternType::Minutes => {
+            //             let delta = 60 - start + value;
+            //             *current = current
+            //                 .clone()
+            //                 .checked_add_signed(TimeDelta::minutes(delta as i64))?
+            //                 .with_second(0)?;
+            //         }
+            //         PatternType::Seconds => {
+            //             let delta = 60 - start + value;
+            //             *current = current.clone().checked_add_signed(TimeDelta::seconds(delta as i64))?;
+            //         }
+            //     }
+            // } else
+            if value > start {
+                match self.type_ {
+                    PatternType::Years => {
+                        *current = current
+                            .with_year(value as i32)?
+                            .with_month(1)?
+                            .with_day(1)?
+                            .with_hour(0)?
+                            .with_minute(0)?
+                            .with_second(0)?;
+                    }
+                    PatternType::Months => {
+                        *current = current
+                            .with_month(value as u32)?
+                            .with_day(1)?
+                            .with_hour(0)?
+                            .with_minute(0)?
+                            .with_second(0)?;
+                    }
+                    PatternType::Doms | PatternType::Dows => {
+                        *current = current
+                            .with_day(value as u32)?
+                            .with_hour(0)?
+                            .with_minute(0)?
+                            .with_second(0)?;
+                    }
+                    PatternType::Hours => {
+                        *current = current.with_hour(value as u32)?.with_minute(0)?.with_second(0)?;
+                    }
+                    PatternType::Minutes => {
+                        *current = current.with_minute(value as u32)?.with_second(0)?;
+                    }
+                    PatternType::Seconds => {
+                        *current = current.with_second(value as u32)?;
+                    }
+                }
+            }
+        }
 
         value
     }
@@ -903,9 +990,9 @@ mod tests {
             pattern.err().unwrap()
         );
 
-        for now in nows {
+        for mut now in nows {
             assert_eq!(
-                pattern.as_ref().unwrap().next(&now),
+                pattern.as_ref().unwrap().next(&mut now),
                 expected,
                 "first: type = {type_:?}, time = {now}, pattern = {input}",
                 now = now.to_rfc3339()
@@ -1035,8 +1122,9 @@ mod tests {
         );
 
         for now in nows {
+            let mut current = now;
             assert_eq!(
-                pattern.as_ref().unwrap().next(&now),
+                pattern.as_ref().unwrap().next(&mut current),
                 expected,
                 "type = {type_:?}, time = {now}, pattern = {input}",
                 now = now.to_rfc3339()
