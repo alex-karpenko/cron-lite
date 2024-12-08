@@ -1,5 +1,5 @@
 //! Lightweight cron expression parser and timeseries generator.
-// #![deny(unsafe_code, warnings, missing_docs)]
+#![deny(unsafe_code, warnings, missing_docs)]
 
 /// Crate specific Errors implementation.
 pub mod error;

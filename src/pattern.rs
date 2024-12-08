@@ -253,17 +253,17 @@ impl Pattern {
                 match self.type_ {
                     PatternType::Years => {
                         *current = current
-                            .with_year(value as i32)?
-                            .with_month(1)?
                             .with_day(1)?
+                            .with_month(1)?
+                            .with_year(value as i32)?
                             .with_hour(0)?
                             .with_minute(0)?
                             .with_second(0)?;
                     }
                     PatternType::Months => {
                         *current = current
-                            .with_month(value as u32)?
                             .with_day(1)?
+                            .with_month(value as u32)?
                             .with_hour(0)?
                             .with_minute(0)?
                             .with_second(0)?;

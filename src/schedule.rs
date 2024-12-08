@@ -5,7 +5,9 @@ use crate::{
 use chrono::{DateTime, Datelike, TimeDelta, TimeZone, Timelike};
 use std::fmt::Display;
 
+/// Minimum valid year.
 pub const MIN_YEAR: u16 = 1970;
+/// Maximum valid year.
 pub const MAX_YEAR: u16 = 2099;
 
 pub(crate) const MIN_YEAR_STR: &str = "1970";
@@ -185,6 +187,7 @@ impl Schedule {
         )
     }
 
+    /// Returns iterator of events starting from `current`
     pub fn iter<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
         ScheduleIterator {
             schedule: self.clone(),
@@ -192,6 +195,7 @@ impl Schedule {
         }
     }
 
+    /// Consumes [`Schedule`] and returns iterator of events starting from `current`
     pub fn into_iter<Tz: TimeZone>(self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
         let next = self.upcoming(current);
         ScheduleIterator { schedule: self, next }
@@ -455,6 +459,8 @@ mod tests {
     #[case("0 0 6 * * 1-5", "2024-01-06T00:00:00Z", "2024-01-08T06:00:00+00:00")]
     #[case("0 0 9 * * 1", "2024-01-01T00:00:00Z", "2024-01-01T09:00:00+00:00")]
     #[case("0 0 9 * * 1", "2024-01-01T09:00:01Z", "2024-01-08T09:00:00+00:00")]
+    #[case("0 0 9 * * 1#1", "2024-04-12T00:00:00Z", "2024-05-06T09:00:00+00:00")]
+    #[case("0 0 9 * * 6#4", "2024-11-30T09:00:00Z", "2024-12-28T09:00:00+00:00")]
     #[case("0 0 9-17 * * 1-5", "2024-01-01T08:00:00Z", "2024-01-01T09:00:00+00:00")]
     #[case("0 0 9-17 * * 1-5", "2024-01-01T17:00:01Z", "2024-01-02T09:00:00+00:00")]
     #[case("0 15,45 9-17 * * 1-5", "2024-01-01T09:00:00Z", "2024-01-01T09:15:00+00:00")]
@@ -463,7 +469,7 @@ mod tests {
     #[case("30 0 0 1 * *", "2024-01-01T00:00:00Z", "2024-01-01T00:00:30+00:00")]
     #[case("30 0 0 1 * *", "2024-01-01T00:00:30Z", "2024-01-01T00:00:30+00:00")]
     #[case("30 0 0 1 * *", "2024-01-01T00:00:30.001Z", "2024-02-01T00:00:30+00:00")]
-    #[case("25 * * * *", "2024-01-01T00:21:21Z", "2024-01-01T00:25:00+00:00")] // case with increasing current minute
+    #[case("25 * * * *", "2024-01-01T00:21:21Z", "2024-01-01T00:25:00+00:00")]
     #[case("1 2 29-31 * *", "2024-01-01T00:00:21Z", "2024-01-29T02:01:00+00:00")]
     #[case("1 2 29-31 * *", "2024-01-31T00:00:21Z", "2024-01-31T02:01:00+00:00")]
     #[case("1 2 29-31 * *", "2024-02-01T00:00:21Z", "2024-02-29T02:01:00+00:00")]
@@ -915,6 +921,19 @@ mod tests {
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
+    fn test_schedule_iter_every_year() {
+        let schedule = Schedule::new("30 12 22 6 ?").unwrap();
+        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2021-01-12T13:13:01+00:00").unwrap());
+
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2021-06-22T12:30:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2022-06-22T12:30:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2023-06-22T12:30:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-06-22T12:30:00+00:00");
+        assert_eq!(iter.next().unwrap().to_rfc3339(), "2025-06-22T12:30:00+00:00");
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_schedule_into_iter() {
         let schedule = Schedule::new("0 0 12 * 1 MON 2024").unwrap();
         let mut iter = schedule.into_iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
@@ -945,5 +964,54 @@ mod tests {
     #[apply(invalid_schedules_to_test)]
     fn test_try_from_invalid_string(#[case] input: &str) {
         assert!(Schedule::try_from(input).is_err(), "input = {input}");
+    }
+
+    #[rstest]
+    // leap year
+    #[case("0 0 0 29 2 ? 2024", "2024-02-28T23:59:59Z", "2024-02-29T00:00:00+00:00")]
+    #[case("0 0 0 29 2 ? 2024-2099", "2024-03-01T23:59:59Z", "2028-02-29T00:00:00+00:00")]
+    #[case("0 0 0 29 2 ? 2025-2099", "2024-02-01T23:59:59Z", "2028-02-29T00:00:00+00:00")]
+    #[case("0 0 0 29 2 ? 1971/7", "1970-02-01T23:59:59Z", "1992-02-29T00:00:00+00:00")]
+    #[case("0 0 0 29 2 ? 2024-2027", "2024-02-29T00:00:01Z", "None")]
+    // end of month rollover
+    #[case("0 0 0 1 * ? 2024", "2024-01-31T23:59:59Z", "2024-02-01T00:00:00+00:00")]
+    #[case("0 0 0 1 * ? 2024", "2024-02-28T23:59:59Z", "2024-03-01T00:00:00+00:00")]
+    #[case("0 0 0 1 * ? 2024", "2024-02-29T23:59:59Z", "2024-03-01T00:00:00+00:00")]
+    #[case("0 0 0 1 * ? 2024", "2024-03-31T23:59:59Z", "2024-04-01T00:00:00+00:00")]
+    #[case("0 0 0 1 * ? 2024", "2024-04-30T23:59:59Z", "2024-05-01T00:00:00+00:00")]
+    #[case("0 0 0 1 * ? 2024", "2024-11-30T23:59:59Z", "2024-12-01T00:00:00+00:00")]
+    // end of year rollover
+    #[case("0 0 0 1 1 ? 2025", "2024-12-31T23:59:59Z", "2025-01-01T00:00:00+00:00")]
+    // last day of month
+    #[case("0 0 0 L 2 ? 2024", "2024-02-28T23:59:59Z", "2024-02-29T00:00:00+00:00")]
+    #[case("0 0 0 L 2 ? 2025", "2024-02-28T23:59:59Z", "2025-02-28T00:00:00+00:00")]
+    // last weekday of month
+    #[case("0 0 0 ? 2 4L 2024", "2024-02-28T23:59:59Z", "2024-02-29T00:00:00+00:00")]
+    // weekday nearest to specific day
+    #[case("0 0 0 15W * ? 2024", "2024-01-14T23:59:59Z", "2024-01-15T00:00:00+00:00")]
+    // nth day of week
+    #[case("0 0 0 ? * 1#3 2024", "2024-01-20T23:59:59Z", "2024-02-19T00:00:00+00:00")]
+    fn test_edge_cases(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
+        let schedule = Schedule::new(pattern).unwrap();
+        let current = DateTime::parse_from_rfc3339(current).unwrap();
+        let next = schedule.upcoming(&current);
+
+        if expected == "None" {
+            assert!(
+                next.is_none(),
+                "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
+            );
+        } else {
+            assert!(
+                next.is_some(),
+                "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
+            );
+
+            assert_eq!(
+                next.unwrap().to_rfc3339(),
+                expected,
+                "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
+            );
+        }
     }
 }
