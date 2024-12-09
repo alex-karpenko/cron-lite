@@ -42,5 +42,5 @@ jobs:
       - name: Doc
         run: cargo doc --no-deps
 
-      - name: Light tests
+      - name: Tests
         run: cargo test --all
