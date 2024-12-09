@@ -2,7 +2,7 @@ use crate::{
     schedule::{MAX_YEAR, MIN_YEAR, MIN_YEAR_STR},
     series::SeriesWithStep,
     utils::{self, days_in_month},
-    Error, Result,
+    CronError, Result,
 };
 use chrono::{DateTime, Datelike, TimeZone, Timelike};
 use std::{collections::BTreeSet, fmt::Display};
@@ -23,7 +23,7 @@ impl Pattern {
 
     pub(crate) fn parse(type_: PatternType, input: &str) -> Result<Self> {
         if input.is_empty() {
-            return Err(Error::InvalidCronPattern(input.to_owned()));
+            return Err(CronError::InvalidCronPattern(input.to_owned(), type_.to_string()));
         }
 
         let mut error_indicator = Ok(());
@@ -57,11 +57,11 @@ impl Pattern {
                     let repeater = if let Ok(repeater) = repeater.parse() {
                         let (_min, max) = type_.min_max();
                         if repeater < 2 || repeater > max {
-                            return Err(Error::InvalidRepeatingPattern(value.to_owned()));
+                            return Err(CronError::InvalidRepeatingPattern(value.to_owned(), type_.to_string()));
                         }
                         repeater
                     } else {
-                        return Err(Error::InvalidRepeatingPattern(value.to_owned()));
+                        return Err(CronError::InvalidRepeatingPattern(value.to_owned(), type_.to_string()));
                     };
 
                     if base.contains('-') {
@@ -69,7 +69,7 @@ impl Pattern {
                         let start = type_.parse(start)?;
                         let end = type_.parse(end)?;
                         if start >= end {
-                            return Err(Error::InvalidRangeValue(value.to_owned()));
+                            return Err(CronError::InvalidRangeValue(value.to_owned(), type_.to_string()));
                         }
                         Ok(PatternItem::RepeatingRange(start, end, repeater))
                     } else {
@@ -80,7 +80,7 @@ impl Pattern {
                     let start = type_.parse(start)?;
                     let end = type_.parse(end)?;
                     if start >= end {
-                        return Err(Error::InvalidRangeValue(value.to_owned()));
+                        return Err(CronError::InvalidRangeValue(value.to_owned(), type_.to_string()));
                     }
                     Ok(PatternItem::Range(start, end))
                 } else if value.contains('#') && type_ == PatternType::Dows {
@@ -89,7 +89,7 @@ impl Pattern {
                     let number = parts.next().unwrap();
                     let number = utils::parse_digital_value(number, 1, 4);
                     if number.is_none() {
-                        return Err(Error::InvalidDayOfWeekValue(value.to_owned()));
+                        return Err(CronError::InvalidDayOfWeekValue(value.to_owned(), type_.to_string()));
                     }
                     Ok(PatternItem::Hash(type_.parse(dow)?, number.unwrap()))
                 } else {
@@ -110,7 +110,7 @@ impl Pattern {
         if splitted.is_empty()
             || (splitted.len() > 1 && (splitted.contains(&PatternItem::All) || splitted.contains(&PatternItem::Any)))
         {
-            return Err(Error::InvalidCronPattern(input.to_owned()));
+            return Err(CronError::InvalidCronPattern(input.to_owned(), type_.to_string()));
         }
 
         let pattern = if splitted.len() > 1 {
@@ -299,7 +299,7 @@ impl Display for Pattern {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum PatternType {
     Seconds,
     Minutes,
@@ -367,7 +367,7 @@ impl PatternType {
                 if let Some(value) = utils::parse_digital_value(input, min, max) {
                     Ok(value)
                 } else {
-                    Err(Error::InvalidDigitalValue(input.to_owned()))
+                    Err(CronError::InvalidDigitalValue(input.to_owned(), self.to_string()))
                 }
             }
             PatternType::Months | PatternType::Dows => {
@@ -376,7 +376,7 @@ impl PatternType {
                 } else if let Some(value) = utils::parse_string_value(input, &variants) {
                     Ok(value + starter_shift)
                 } else {
-                    Err(Error::InvalidMnemonicValue(input.to_owned()))
+                    Err(CronError::InvalidMnemonicValue(input.to_owned(), self.to_string()))
                 }
             }
         }
@@ -795,7 +795,7 @@ mod tests {
     #[case(PatternType::Dows, "M@n")]
     fn test_parse_invalid_pattern_type(#[case] type_: PatternType, #[case] input: &str) {
         assert!(
-            matches!(type_.parse(input), Err(Error::InvalidDigitalValue(e)) | Err(Error::InvalidMnemonicValue(e)) if e == input)
+            matches!(type_.parse(input), Err(CronError::InvalidDigitalValue(e, t)) | Err(CronError::InvalidMnemonicValue(e, t)) if e == input && t == type_.to_string())
         );
     }
 

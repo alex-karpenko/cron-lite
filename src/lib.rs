@@ -10,8 +10,8 @@ mod series;
 mod utils;
 
 /// Re-export of public entities.
-pub use error::Error;
+pub use error::CronError;
 pub use schedule::Schedule;
 
 /// Convenient alias for `Result`.
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+pub type Result<T, E = CronError> = std::result::Result<T, E>;

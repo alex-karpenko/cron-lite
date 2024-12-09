@@ -1,6 +1,6 @@
 use crate::{
     pattern::{Pattern, PatternItem, PatternType, PatternValueType},
-    utils, Error, Result,
+    utils, CronError, Result,
 };
 use chrono::{DateTime, Datelike, TimeDelta, TimeZone, Timelike};
 use std::fmt::Display;
@@ -46,7 +46,7 @@ impl Schedule {
         } else if parts.len() == 6 {
             parts.insert(6, "*");
         } else if parts.len() != 7 {
-            return Err(Error::InvalidCronSchedule(pattern));
+            return Err(CronError::InvalidCronSchedule(pattern));
         }
 
         let schedule = Self {
@@ -61,10 +61,10 @@ impl Schedule {
 
         // Validate DOM and DOW relationship
         match (schedule.dom.pattern(), schedule.dow.pattern()) {
-            (PatternItem::Any, PatternItem::Any) => return Err(Error::InvalidDaysPattern(pattern)),
+            (PatternItem::Any, PatternItem::Any) => return Err(CronError::InvalidDaysPattern(pattern)),
             (PatternItem::All, _) | (_, PatternItem::All) | (PatternItem::Any, _) | (_, PatternItem::Any) => {}
             (_, _) => {
-                return Err(Error::InvalidDaysPattern(pattern));
+                return Err(CronError::InvalidDaysPattern(pattern));
             }
         }
 
@@ -186,6 +186,7 @@ impl Schedule {
     }
 
     /// Returns iterator of events starting from `current`
+    #[inline]
     pub fn iter<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
         ScheduleIterator {
             schedule: self.clone(),
@@ -194,6 +195,7 @@ impl Schedule {
     }
 
     /// Consumes [`Schedule`] and returns iterator of events starting from `current`
+    #[inline]
     pub fn into_iter<Tz: TimeZone>(self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
         let next = self.upcoming(current);
         ScheduleIterator { schedule: self, next }
@@ -218,7 +220,7 @@ impl<Tz: TimeZone> Iterator for ScheduleIterator<Tz> {
 }
 
 impl TryFrom<String> for Schedule {
-    type Error = Error;
+    type Error = CronError;
 
     fn try_from(value: String) -> Result<Self> {
         Self::new(value)
@@ -226,7 +228,7 @@ impl TryFrom<String> for Schedule {
 }
 
 impl TryFrom<&String> for Schedule {
-    type Error = Error;
+    type Error = CronError;
 
     fn try_from(value: &String) -> Result<Self> {
         Self::new(value)
@@ -234,7 +236,7 @@ impl TryFrom<&String> for Schedule {
 }
 
 impl TryFrom<&str> for Schedule {
-    type Error = Error;
+    type Error = CronError;
 
     fn try_from(value: &str) -> Result<Self> {
         Self::new(value)

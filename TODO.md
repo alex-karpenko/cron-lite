@@ -2,7 +2,6 @@
 - create documentation
 - create example
 - performance tests
-- improve errors handling: make errors more granular and descriptive
 - implement aliases:
   - @yearly  @annually
   - @monthly
