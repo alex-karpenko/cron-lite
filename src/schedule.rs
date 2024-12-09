@@ -73,7 +73,7 @@ impl Schedule {
         Ok(schedule)
     }
 
-    /// Return time of the upcoming cron event next to provided current.
+    /// Return time of the upcoming cron event next to the provided current value.
     pub fn upcoming<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
         let mut current = if current.nanosecond() > 0 {
             current
@@ -980,7 +980,7 @@ mod tests {
     #[case("0 0 0 1 * ? 2024", "2024-03-31T23:59:59Z", "2024-04-01T00:00:00+00:00")]
     #[case("0 0 0 1 * ? 2024", "2024-04-30T23:59:59Z", "2024-05-01T00:00:00+00:00")]
     #[case("0 0 0 1 * ? 2024", "2024-11-30T23:59:59Z", "2024-12-01T00:00:00+00:00")]
-    // end of year rollover
+    // end-of-year rollover
     #[case("0 0 0 1 1 ? 2025", "2024-12-31T23:59:59Z", "2025-01-01T00:00:00+00:00")]
     // last day of month
     #[case("0 0 0 L 2 ? 2024", "2024-02-28T23:59:59Z", "2024-02-29T00:00:00+00:00")]
@@ -989,7 +989,7 @@ mod tests {
     #[case("0 0 0 ? 2 4L 2024", "2024-02-28T23:59:59Z", "2024-02-29T00:00:00+00:00")]
     // weekday nearest to specific day
     #[case("0 0 0 15W * ? 2024", "2024-01-14T23:59:59Z", "2024-01-15T00:00:00+00:00")]
-    // nth day of week
+    // nth day of the week
     #[case("0 0 0 ? * 1#3 2024", "2024-01-20T23:59:59Z", "2024-02-19T00:00:00+00:00")]
     fn test_edge_cases(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
         let schedule = Schedule::new(pattern).unwrap();

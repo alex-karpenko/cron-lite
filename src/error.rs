@@ -12,7 +12,7 @@ pub enum Error {
     /// Invalid mnemonic value.
     #[error("invalid mnemonic value: {0}")]
     InvalidMnemonicValue(String),
-    /// Invalid day of week.
+    /// Invalid day of the week.
     #[error("invalid day of week value: {0}")]
     InvalidDayOfWeekValue(String),
     /// Invalid range.

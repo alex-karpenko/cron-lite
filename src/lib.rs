@@ -1,4 +1,4 @@
-//! Lightweight cron expression parser and timeseries generator.
+//! Lightweight cron expression parser and time series generator.
 #![deny(unsafe_code, warnings, missing_docs)]
 
 /// Crate specific Errors implementation.

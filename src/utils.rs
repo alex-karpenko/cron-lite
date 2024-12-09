@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(parse_string_value("", test_array), None);
         assert_eq!(parse_string_value("invalid_day", test_array), None);
 
-        // Test with different array
+        // Test with a different array
         let months = &["jan", "feb", "mar"];
         assert_eq!(parse_string_value("feb", months), Some(1));
         assert_eq!(parse_string_value("FEB", months), Some(1));
@@ -397,7 +397,7 @@ mod tests {
     #[case(2023, 12, 5, 1, 1)] // First Friday of December 2023
     #[case(2023, 12, 6, 1, 2)] // First Saturday of December 2023
 
-    // Test different occurrences of same weekday
+    // Test different occurrences of the same weekday
     #[case(2023, 12, 0, 2, 10)] // Second Sunday of December 2023
     #[case(2023, 12, 0, 3, 17)] // Third Sunday of December 2023
     #[case(2023, 12, 0, 4, 24)] // Fourth Sunday of December 2023
@@ -498,8 +498,8 @@ mod tests {
     // Test edge cases
     #[case(2024, 3, 31, 29)] // Last day is Sunday
     #[case(2024, 8, 31, 30)] // Last day is Saturday
-    #[case(2024, 6, 1, 3)] // First day is Saturday
-    #[case(2024, 9, 1, 2)] // First day is Sunday
+    #[case(2024, 6, 1, 3)] // The first day is Saturday
+    #[case(2024, 9, 1, 2)] // The first day is Sunday
 
     fn test_nearest_weekday(
         #[case] y: PatternValueType,

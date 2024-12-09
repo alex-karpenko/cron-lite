@@ -215,7 +215,7 @@ impl Pattern {
                     None
                 }
             }
-            PatternItem::LastDom => Some(utils::days_in_month(
+            PatternItem::LastDom => Some(days_in_month(
                 current.year() as PatternValueType,
                 current.month() as PatternValueType,
             )),
@@ -917,7 +917,7 @@ mod tests {
         #[case] type_: PatternType,
         #[case] expected: Option<PatternValueType>,
     ) {
-        let nows = [
+        let date_times = [
             DateTime::parse_from_rfc3339(format!("2024-01-01T{time}Z").as_str()).unwrap(),
             DateTime::parse_from_rfc3339(format!("2024-02-01T{time}Z").as_str()).unwrap(),
             DateTime::parse_from_rfc3339(format!("2024-02-29T{time}Z").as_str()).unwrap(),
@@ -938,7 +938,7 @@ mod tests {
             pattern.err().unwrap()
         );
 
-        for mut now in nows {
+        for mut now in date_times {
             assert_eq!(
                 pattern.as_ref().unwrap().next(&mut now),
                 expected,
@@ -1030,7 +1030,7 @@ mod tests {
     #[case("1991-11-11", "*/10,2090-2099/2,1999", PatternType::Years, Some(1999))]
     #[case("2027-11-11", "*/10,2090-2099/2,1999", PatternType::Years, Some(2030))]
     #[case("2091-02-28", "*/10,2090-2099/2,1999", PatternType::Years, Some(2092))]
-    // Days of week
+    // Days of the week
     #[case("1970-01-01", "0", PatternType::Dows, Some(4))]
     #[case("1970-02-02", "sun", PatternType::Dows, Some(8))]
     #[case("1970-03-03", "mon-fri", PatternType::Dows, Some(3))]
@@ -1055,7 +1055,7 @@ mod tests {
         #[case] type_: PatternType,
         #[case] expected: Option<PatternValueType>,
     ) {
-        let nows = [
+        let date_times = [
             DateTime::parse_from_rfc3339(format!("{date}T00:00:00Z").as_str()).unwrap(),
             DateTime::parse_from_rfc3339(format!("{date}T00:15:33Z").as_str()).unwrap(),
             DateTime::parse_from_rfc3339(format!("{date}T01:00:00Z").as_str()).unwrap(),
@@ -1076,7 +1076,7 @@ mod tests {
             pattern.err().unwrap()
         );
 
-        for now in nows {
+        for now in date_times {
             let mut current = now;
             assert_eq!(
                 pattern.as_ref().unwrap().next(&mut current),
