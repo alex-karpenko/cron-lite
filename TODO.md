@@ -1,0 +1,11 @@
+# TODO
+- create documentation
+- create example
+- performance tests
+- improve errors handling: make errors more granular and descriptive
+- implement aliases:
+  - @yearly  @annually
+  - @monthly
+  - @daily @midnight
+  - @hourly
+- feature "tz": timezone aware patterns with TZ=Continent/City like pattern
