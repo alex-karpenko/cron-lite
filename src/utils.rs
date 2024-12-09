@@ -29,6 +29,7 @@ pub(crate) fn parse_string_value(input: &str, values: &[&str]) -> Option<Pattern
     }
 }
 
+#[inline]
 pub(crate) fn is_leap_year(year: PatternValueType) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }

@@ -12,7 +12,7 @@ where
     T: Copy + Add + AddAssign + PartialOrd,
     <T as Add>::Output: PartialOrd<T>,
 {
-    // This is caller's responsibility to ensure that
+    // Caller is responsible to ensure that
     // maximum serial value (max+step) isn't greater than type's maximum.
     #[inline]
     pub(crate) fn new(min: T, max: T, step: T, start: T) -> Self {

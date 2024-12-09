@@ -16,6 +16,7 @@ pub(crate) struct Pattern {
 }
 
 impl Pattern {
+    #[inline]
     pub(crate) fn pattern(&self) -> &PatternItem {
         &self.pattern
     }
@@ -300,13 +301,31 @@ impl Display for Pattern {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum PatternType {
-    Seconds = 0,
-    Minutes = 1,
-    Hours = 2,
-    Doms = 3,
-    Months = 4,
-    Dows = 5,
-    Years = 6,
+    Seconds,
+    Minutes,
+    Hours,
+    Doms,
+    Months,
+    Dows,
+    Years,
+}
+
+impl Display for PatternType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Seconds => "seconds",
+                Self::Minutes => "minutes",
+                Self::Hours => "hours",
+                Self::Doms => "days of month",
+                Self::Months => "months",
+                Self::Dows => "days of week",
+                Self::Years => "years",
+            }
+        )
+    }
 }
 
 impl PatternType {

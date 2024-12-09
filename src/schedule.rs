@@ -46,7 +46,7 @@ impl Schedule {
         } else if parts.len() == 6 {
             parts.insert(6, "*");
         } else if parts.len() != 7 {
-            return Err(Error::InvalidCronPattern(pattern));
+            return Err(Error::InvalidCronSchedule(pattern));
         }
 
         let schedule = Self {
@@ -60,13 +60,11 @@ impl Schedule {
         };
 
         // Validate DOM and DOW relationship
-        let pattern_dom = schedule.dom.pattern();
-        let pattern_dow = schedule.dow.pattern();
-        match (pattern_dom, pattern_dow) {
-            (PatternItem::Any, PatternItem::Any) => return Err(Error::InvalidCronPattern(pattern)),
+        match (schedule.dom.pattern(), schedule.dow.pattern()) {
+            (PatternItem::Any, PatternItem::Any) => return Err(Error::InvalidDaysPattern(pattern)),
             (PatternItem::All, _) | (_, PatternItem::All) | (PatternItem::Any, _) | (_, PatternItem::Any) => {}
             (_, _) => {
-                return Err(Error::InvalidCronPattern(pattern));
+                return Err(Error::InvalidDaysPattern(pattern));
             }
         }
 
@@ -253,6 +251,7 @@ impl Display for Schedule {
     }
 }
 
+#[inline]
 fn inc_year(
     year: &mut Option<PatternValueType>,
     month: &mut Option<PatternValueType>,
@@ -276,6 +275,7 @@ fn inc_year(
     }
 }
 
+#[inline]
 fn inc_month(
     year: &mut Option<PatternValueType>,
     month: &mut Option<PatternValueType>,
@@ -298,6 +298,7 @@ fn inc_month(
     }
 }
 
+#[inline]
 fn inc_dom(
     year: &mut Option<PatternValueType>,
     month: &mut Option<PatternValueType>,
@@ -319,6 +320,7 @@ fn inc_dom(
     }
 }
 
+#[inline]
 fn inc_hour(
     year: &mut Option<PatternValueType>,
     month: &mut Option<PatternValueType>,
@@ -339,6 +341,7 @@ fn inc_hour(
     }
 }
 
+#[inline]
 fn inc_minute(
     year: &mut Option<PatternValueType>,
     month: &mut Option<PatternValueType>,
