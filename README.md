@@ -63,9 +63,9 @@ found [here](https://en.wikipedia.org/wiki/Cron#Cron_expression) (this is not co
 
 The single entity of the crate is a `Schedule` structure, which has three basic methods:
 
-- new(): constructor to parse and validate provided schedule;
-- upcoming(): returns time of the next schedule's event, starting from the provided timestamp;
-- iter(): returns an `Iterator` which produces series of timestamps according to the schedule.
+- `new()`: constructor to parse and validate provided schedule;
+- `upcoming()`: returns time of the next schedule's event, starting from the provided timestamp;
+- `iter()`: returns an `Iterator` which produces series of timestamps according to the schedule.
 
 ### Example with `upcoming`
 
