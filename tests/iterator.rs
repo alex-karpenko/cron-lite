@@ -1,5 +1,5 @@
 use chrono::Utc;
-use cron_light::{Result, Schedule};
+use cron_lite::{Result, Schedule};
 
 #[test]
 fn iterator() -> Result<()> {

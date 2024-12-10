@@ -1,14 +1,14 @@
-# cron-light
+# cron-lite
 
 Lightweight cron expressions parser and time series generator.
 
 <p>
-<a href="https://github.com/alex-karpenko/cron-light/actions/workflows/ci.yaml" rel="nofollow"><img src="https://img.shields.io/github/actions/workflow/status/alex-karpenko/cron-light/ci.yaml?label=ci" alt="CI status"></a>
-<a href="https://github.com/alex-karpenko/cron-light/actions/workflows/audit.yaml" rel="nofollow"><img src="https://img.shields.io/github/actions/workflow/status/alex-karpenko/cron-light/audit.yaml?label=audit" alt="Audit status"></a>
-<a href="https://docs.rs/cron-light" rel="nofollow"><img src="https://img.shields.io/docsrs/cron-light" alt="docs.rs status"></a>
-<a href="https://crates.io/crates/cron-light" rel="nofollow"><img src="https://img.shields.io/crates/v/cron-light" alt="Version at Crates.io"></a>
-<a href="https://app.codecov.io/github/alex-karpenko/cron-light" rel="nofollow"><img src="https://img.shields.io/codecov/c/github/alex-karpenko/cron-light" alt="License"></a>
-<a href="https://github.com/alex-karpenko/cron-light/blob/HEAD/LICENSE" rel="nofollow"><img src="https://img.shields.io/github/license/alex-karpenko/cron-light" alt="License"></a>
+<a href="https://github.com/alex-karpenko/cron-lite/actions/workflows/ci.yaml" rel="nofollow"><img src="https://img.shields.io/github/actions/workflow/status/alex-karpenko/cron-lite/ci.yaml?label=ci" alt="CI status"></a>
+<a href="https://github.com/alex-karpenko/cron-lite/actions/workflows/audit.yaml" rel="nofollow"><img src="https://img.shields.io/github/actions/workflow/status/alex-karpenko/cron-lite/audit.yaml?label=audit" alt="Audit status"></a>
+<a href="https://docs.rs/cron-lite" rel="nofollow"><img src="https://img.shields.io/docsrs/cron-lite" alt="docs.rs status"></a>
+<a href="https://crates.io/crates/cron-lite" rel="nofollow"><img src="https://img.shields.io/crates/v/cron-lite" alt="Version at Crates.io"></a>
+<a href="https://app.codecov.io/github/alex-karpenko/cron-lite" rel="nofollow"><img src="https://img.shields.io/codecov/c/github/alex-karpenko/cron-lite" alt="License"></a>
+<a href="https://github.com/alex-karpenko/cron-lite/blob/HEAD/LICENSE" rel="nofollow"><img src="https://img.shields.io/github/license/alex-karpenko/cron-lite" alt="License"></a>
 </p>
 
 This is a tiny crate, intended to:
@@ -34,7 +34,7 @@ This crate uses such format by default, but two optional fields may be added, se
 The table below describes valid values and patterns of each field:
 
 | Field        | Required | Allowed values  | Allowed special characters |
-|--------------|----------|-----------------|----------------------------|
+| ------------ | -------- | --------------- | -------------------------- |
 | Seconds      | No       | 0-59            | * , - /                    |
 | Minutes      | Yes      | 0-59            | * , - /                    |
 | Hours        | Yes      | 0-23            | * , - /                    |
@@ -71,7 +71,7 @@ The single entity of the crate is a `Schedule` structure, which has three basic 
 
 ```rust
 use chrono::Utc;
-use cron_light::{Result, Schedule};
+use cron_lite::{Result, Schedule};
 
 fn main() -> Result<()> {
     let schedule = Schedule::new("0 0 0 * * *")?;
@@ -89,7 +89,7 @@ fn main() -> Result<()> {
 
 ```rust
 use chrono::Utc;
-use cron_light::{Result, Schedule};
+use cron_lite::{Result, Schedule};
 
 fn main() -> Result<()> {
     let schedule = Schedule::new("0 0 0 * * *")?;

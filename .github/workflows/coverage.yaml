@@ -26,12 +26,12 @@ jobs:
         env:
           CI: true
           RUSTFLAGS: -Cinstrument-coverage
-          LLVM_PROFILE_FILE: cron-light-%p-%m.profraw
+          LLVM_PROFILE_FILE: cron-lite-%p-%m.profraw
         run: cargo test --all -- --include-ignored
 
       - name: Generate coverage
         run: |
-          grcov/grcov $(find . -name "cron-light-*.profraw" -print) \
+          grcov/grcov $(find . -name "cron-lite-*.profraw" -print) \
             --branch \
             --ignore-not-existing \
             --binary-path ./target/debug/ \

@@ -3,7 +3,7 @@
 
 [remote.github]
 owner = "alex-karpenko"
-repo = "cron-light"
+repo = "cron-lite"
 
 [changelog]
 # changelog header

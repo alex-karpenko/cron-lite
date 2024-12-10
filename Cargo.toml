@@ -1,15 +1,15 @@
 [package]
-name = "cron-light"
+name = "cron-lite"
 authors = ["Oleksii Karpenko <alexkarpenko@yahoo.com>"]
 categories = ["date-and-time", "parser-implementations"]
 description = "Lightweight cron expressions parser and time series generator"
 edition = "2021"
 rust-version = "1.67.1"
-homepage = "https://github.com/alex-karpenko/cron-light"
+homepage = "https://github.com/alex-karpenko/cron-lite"
 keywords = ["time", "cron", "schedule", "repeat", "periodic"]
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/alex-karpenko/cron-light"
+repository = "https://github.com/alex-karpenko/cron-lite"
 version = "0.1.0"
 exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".gitignore", "mutants.*/**"]
 

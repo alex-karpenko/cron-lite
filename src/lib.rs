@@ -53,7 +53,7 @@
 //! ### Example with `upcoming`
 //! ```rust
 //! use chrono::Utc;
-//! use cron_light::{Result, Schedule};
+//! use cron_lite::{Result, Schedule};
 //!
 //! fn upcoming() -> Result<()> {
 //!     let schedule = Schedule::new("0 0 0 * * *")?;
@@ -73,7 +73,7 @@
 //! ### Example with `iter`
 //! ```rust
 //! use chrono::Utc;
-//! use cron_light::{Result, Schedule};
+//! use cron_lite::{Result, Schedule};
 //!
 //! fn iterator() -> Result<()> {
 //!     let schedule = Schedule::new("0 0 0 * * *")?;
