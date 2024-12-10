@@ -473,10 +473,7 @@ mod tests {
 
         for (item, expected) in test_cases {
             assert_eq!(item.to_string(), expected);
-            let pattern = Pattern {
-                type_,
-                pattern: item,
-            };
+            let pattern = Pattern { type_, pattern: item };
             assert_eq!(pattern.to_string(), expected);
         }
     }
