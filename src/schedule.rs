@@ -3,7 +3,7 @@ use crate::{
     utils, CronError, Result,
 };
 use chrono::{DateTime, Datelike, TimeDelta, TimeZone, Timelike};
-use std::fmt::Display;
+use std::{fmt::Display, str::FromStr};
 
 /// Minimum valid year.
 pub const MIN_YEAR: u16 = 1970;
@@ -246,6 +246,14 @@ impl TryFrom<&str> for Schedule {
 
     fn try_from(value: &str) -> Result<Self> {
         Self::new(value)
+    }
+}
+
+impl FromStr for Schedule {
+    type Err = CronError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::new(s)
     }
 }
 
@@ -841,6 +849,10 @@ mod tests {
         // String
         let schedule2 = Schedule::try_from(tst_string).unwrap();
         assert_eq!(schedule1, schedule2);
+
+        // from_str
+        let schedule2 = Schedule::from_str(input).unwrap();
+        assert_eq!(schedule1, schedule2);
     }
 
     #[rstest]
@@ -980,6 +992,7 @@ mod tests {
     #[apply(invalid_schedules_to_test)]
     fn test_try_from_invalid_string(#[case] input: &str) {
         assert!(Schedule::try_from(input).is_err(), "input = {input}");
+        assert!(Schedule::from_str(input).is_err(), "input = {input}");
     }
 
     #[rstest]
