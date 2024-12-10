@@ -14,15 +14,7 @@ pub(crate) const MIN_YEAR_STR: &str = "1970";
 
 /// Represents a cron schedule pattern with its methods.
 ///
-/// | Field        | Required | Allowed values  | Allowed special characters |
-/// | ------------ | -------- | --------------- | -------------------------- |
-/// | Seconds      | No       | 0-59            | * , - /                    |
-/// | Minutes      | Yes      | 0-59            | * , - /                    |
-/// | Hours        | Yes      | 0-23            | * , - /                    |
-/// | Day of Month | Yes      | 1-31            | * , - / ? L W              |
-/// | Month        | Yes      | 1-12 or JAN-DEC | * , - /                    |
-/// | Day of Week  | Yes      | 0-6 or SUN-SAT  | * , - ? L #                |
-/// | Year         | No       | 1970-2099       | * , - /                    |
+/// For cron schedule clarification and usage examples, please refer to the [crate documentation](crate).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Schedule {
     year: Pattern,
@@ -35,7 +27,11 @@ pub struct Schedule {
 }
 
 impl Schedule {
-    /// Schedule constructor.
+    /// Parses and validates provided `pattern` and constructs [`Schedule`] instance.
+    ///
+    /// Alternative way to construct [`Schedule`] is to use one of `try_from` methods.
+    ///
+    /// Returns [`CronError`] in a case provided pattern is unparsable or has format errors.
     pub fn new(pattern: impl Into<String>) -> Result<Self> {
         let pattern = pattern.into();
         let mut parts: Vec<&str> = pattern.split_whitespace().collect();
@@ -71,7 +67,9 @@ impl Schedule {
         Ok(schedule)
     }
 
-    /// Return time of the upcoming cron event next to the provided current value.
+    /// Return time of the upcoming cron event starting from (including) provided `current` value.
+    ///
+    /// Returns `None` if there is no upcoming event's time.
     pub fn upcoming<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
         let mut current = if current.nanosecond() > 0 {
             current
@@ -185,7 +183,7 @@ impl Schedule {
         )
     }
 
-    /// Returns iterator of events starting from `current`
+    /// Returns iterator of events starting from `current` (inclusively).
     #[inline]
     pub fn iter<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
         ScheduleIterator {
@@ -194,7 +192,7 @@ impl Schedule {
         }
     }
 
-    /// Consumes [`Schedule`] and returns iterator of events starting from `current`
+    /// Consumes [`Schedule`] and returns iterator of events starting from `current` (inclusively).
     #[inline]
     pub fn into_iter<Tz: TimeZone>(self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
         let next = self.upcoming(current);

@@ -145,7 +145,7 @@ impl Pattern {
 
                 for pattern in values {
                     let item = Self {
-                        type_: self.type_.clone(),
+                        type_: self.type_,
                         pattern: pattern.clone(),
                     };
                     let mut current = current.clone();
@@ -474,7 +474,7 @@ mod tests {
         for (item, expected) in test_cases {
             assert_eq!(item.to_string(), expected);
             let pattern = Pattern {
-                type_: type_.clone(),
+                type_,
                 pattern: item,
             };
             assert_eq!(pattern.to_string(), expected);
@@ -510,7 +510,7 @@ mod tests {
         ];
 
         for (item, expected) in test_cases {
-            let pattern = Pattern::parse(type_.clone(), item);
+            let pattern = Pattern::parse(type_, item);
             assert!(
                 pattern.is_ok(),
                 "type = {type_:?}, item = {item}, error = {}",
@@ -713,7 +713,7 @@ mod tests {
     #[case(PatternType::Years,   vec!["1972-1972/2", "2005-2001/2", "*,1", "2001-2001", "2005-2001", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/2", "1969", "2100", "2000/2100"])]
     fn test_pattern_item_parse_invalid(#[case] type_: PatternType, #[case] input: Vec<&str>) {
         for item in input {
-            let r = Pattern::parse(type_.clone(), item);
+            let r = Pattern::parse(type_, item);
             assert!(r.is_err(), "type = {type_:?}, pattern = '{item}'");
         }
     }
@@ -949,7 +949,7 @@ mod tests {
             DateTime::parse_from_rfc3339(format!("2099-12-31T{time}Z").as_str()).unwrap(),
         ];
 
-        let pattern = Pattern::parse(type_.clone(), input);
+        let pattern = Pattern::parse(type_, input);
 
         assert!(
             pattern.is_ok(),
@@ -1087,7 +1087,7 @@ mod tests {
             DateTime::parse_from_rfc3339(format!("{date}T23:59:59Z").as_str()).unwrap(),
         ];
 
-        let pattern = Pattern::parse(type_.clone(), input);
+        let pattern = Pattern::parse(type_, input);
 
         assert!(
             pattern.is_ok(),
