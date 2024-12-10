@@ -1144,4 +1144,15 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_pattern_type_display() {
+        assert_eq!(PatternType::Seconds.to_string(), "seconds");
+        assert_eq!(PatternType::Minutes.to_string(), "minutes");
+        assert_eq!(PatternType::Hours.to_string(), "hours");
+        assert_eq!(PatternType::Doms.to_string(), "days of month");
+        assert_eq!(PatternType::Months.to_string(), "months");
+        assert_eq!(PatternType::Dows.to_string(), "days of week");
+        assert_eq!(PatternType::Years.to_string(), "years");
+    }
 }

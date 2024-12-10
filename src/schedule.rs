@@ -1020,6 +1020,7 @@ mod tests {
     #[case("0 0 0 15W * ? 2024", "2024-01-14T23:59:59Z", "2024-01-15T00:00:00+00:00")]
     // nth day of the week
     #[case("0 0 0 ? * 1#3 2024", "2024-01-20T23:59:59Z", "2024-02-19T00:00:00+00:00")]
+    #[timeout(Duration::from_secs(1))]
     fn test_edge_cases(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
         let schedule = Schedule::new(pattern).unwrap();
         let current = DateTime::parse_from_rfc3339(current).unwrap();

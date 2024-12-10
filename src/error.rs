@@ -43,3 +43,56 @@ impl Display for CronError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_invalid_cron_schedule() {
+        let error = CronError::InvalidCronSchedule("* * *".to_string());
+        assert_eq!(error.to_string(), "invalid cron schedule: * * *");
+    }
+
+    #[test]
+    fn test_invalid_days_pattern() {
+        let error = CronError::InvalidDaysPattern("31W".to_string());
+        assert_eq!(error.to_string(), "invalid patterns of days of month or/and week: 31W");
+    }
+
+    #[test]
+    fn test_invalid_cron_pattern() {
+        let error = CronError::InvalidCronPattern("abc".to_string(), "minutes".to_string());
+        assert_eq!(error.to_string(), "minutes: invalid cron pattern: abc");
+    }
+
+    #[test]
+    fn test_invalid_digital_value() {
+        let error = CronError::InvalidDigitalValue("99".to_string(), "minutes".to_string());
+        assert_eq!(error.to_string(), "minutes: invalid digital value: 99");
+    }
+
+    #[test]
+    fn test_invalid_mnemonic_value() {
+        let error = CronError::InvalidMnemonicValue("FOO".to_string(), "months".to_string());
+        assert_eq!(error.to_string(), "months: invalid mnemonic value: FOO");
+    }
+
+    #[test]
+    fn test_invalid_day_of_week() {
+        let error = CronError::InvalidDayOfWeekValue("8".to_string(), "days of week".to_string());
+        assert_eq!(error.to_string(), "days of week: invalid day of week value: 8");
+    }
+
+    #[test]
+    fn test_invalid_range() {
+        let error = CronError::InvalidRangeValue("5-2".to_string(), "hours".to_string());
+        assert_eq!(error.to_string(), "hours: invalid range pattern: 5-2");
+    }
+
+    #[test]
+    fn test_invalid_repeating() {
+        let error = CronError::InvalidRepeatingPattern("*/0".to_string(), "minutes".to_string());
+        assert_eq!(error.to_string(), "minutes: invalid repeating pattern: */0");
+    }
+}
