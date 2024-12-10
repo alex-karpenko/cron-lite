@@ -1,0 +1,21 @@
+[package]
+name = "cron-light"
+authors = ["Oleksii Karpenko <alexkarpenko@yahoo.com>"]
+categories = ["date-and-time", "parser-implementations"]
+description = "Lightweight cron expressions parser and time series generator"
+edition = "2021"
+rust-version = "1.67.1"
+homepage = "https://github.com/alex-karpenko/cron-light"
+keywords = ["time", "cron", "schedule", "repeat", "periodic"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/alex-karpenko/cron-light"
+version = "0.1.0"
+exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".gitignore", "mutants.*/**"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
+
+[dev-dependencies]
+rstest = { version = "0.23.0", default-features = false }
+rstest_reuse = { version = "0.7.0", default-features = false }
