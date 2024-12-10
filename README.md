@@ -109,6 +109,7 @@ fn main() -> Result<()> {
 - [ ] More unit tests for edge cases.
 - [ ] Aliases: `@yearly`, `@annually`, `@monthly`, `@daily`, `@midnight`, `@hourly`.
 - [ ] Feature `tz`: timezone-aware schedule pattern.
+- [ ] Feature `serde`: implement Serialize/Deserialize traits for `Schedule`.
 
 ## License
 
