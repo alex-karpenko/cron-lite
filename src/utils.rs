@@ -1,6 +1,8 @@
+/// Common utility functions.
 use crate::pattern::PatternValueType;
 use std::cmp::Ordering;
 
+/// Converts string into unsigned number with bounds validation.
 pub(crate) fn parse_digital_value(
     input: &str,
     min: PatternValueType,
@@ -18,6 +20,7 @@ pub(crate) fn parse_digital_value(
     }
 }
 
+/// Converts string with mnemonic value representation into unsigned number.
 pub(crate) fn parse_string_value(input: &str, values: &[&str]) -> Option<PatternValueType> {
     if input.is_empty() {
         None
@@ -29,11 +32,13 @@ pub(crate) fn parse_string_value(input: &str, values: &[&str]) -> Option<Pattern
     }
 }
 
+/// Returns `true` if provided year is leap.
 #[inline]
 pub(crate) fn is_leap_year(year: PatternValueType) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
+/// Returns number of days in specified month.
 pub(crate) fn days_in_month(year: PatternValueType, month: PatternValueType) -> PatternValueType {
     if month == 0 || month > 12 {
         panic!("Invalid month: {month}");
@@ -48,6 +53,7 @@ pub(crate) fn days_in_month(year: PatternValueType, month: PatternValueType) -> 
     }
 }
 
+/// Calculates day of week for specified date.
 pub(crate) fn day_of_week(year: PatternValueType, month: PatternValueType, day: PatternValueType) -> PatternValueType {
     if day == 0 || month == 0 || month > 12 || day > days_in_month(year, month) {
         panic!("Invalid date: {year:04}-{month:02}-{day:02}");
@@ -64,6 +70,7 @@ pub(crate) fn day_of_week(year: PatternValueType, month: PatternValueType, day: 
     ((day + month_offset + 5 * (year % 4) + 4 * (year % 100) + 6 * (year % 400)) % 7) as PatternValueType
 }
 
+/// Returns day in the month for the last specified day of the week.
 pub(crate) fn last_dow(year: PatternValueType, month: PatternValueType, dow: PatternValueType) -> PatternValueType {
     if month == 0 || month > 12 || dow > 6 {
         panic!("Invalid month or day of week: {month:02}/{dow}");
@@ -78,6 +85,7 @@ pub(crate) fn last_dow(year: PatternValueType, month: PatternValueType, dow: Pat
     last_day
 }
 
+/// Returns date (day in the month) of the specified N-th day of the week.
 pub(crate) fn nth_dow(
     year: PatternValueType,
     month: PatternValueType,
@@ -105,6 +113,7 @@ pub(crate) fn nth_dow(
     day
 }
 
+/// Returns date of the weekday (not Sundays or Saturday) nearest to the specified date in the same month.
 pub(crate) fn nearest_weekday(
     year: PatternValueType,
     month: PatternValueType,

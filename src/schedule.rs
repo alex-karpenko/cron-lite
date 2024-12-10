@@ -34,28 +34,30 @@ impl Schedule {
     /// Returns [`CronError`] in a case provided pattern is unparsable or has format errors.
     pub fn new(pattern: impl Into<String>) -> Result<Self> {
         let pattern = pattern.into();
-        let mut parts: Vec<&str> = pattern.split_whitespace().collect();
+        let mut elements: Vec<&str> = pattern.split_whitespace().collect();
 
-        if parts.len() == 5 {
-            parts.insert(0, "0");
-            parts.insert(6, "*");
-        } else if parts.len() == 6 {
-            parts.insert(6, "*");
-        } else if parts.len() != 7 {
+        // Check the number of elements in the provided expression and augment it with defaults.
+        if elements.len() == 5 {
+            elements.insert(0, "0");
+            elements.insert(6, "*");
+        } else if elements.len() == 6 {
+            elements.insert(6, "*");
+        } else if elements.len() != 7 {
             return Err(CronError::InvalidCronSchedule(pattern));
         }
 
+        // Parse each element.
         let schedule = Self {
-            second: Pattern::parse(PatternType::Seconds, parts[0])?,
-            minute: Pattern::parse(PatternType::Minutes, parts[1])?,
-            hour: Pattern::parse(PatternType::Hours, parts[2])?,
-            dom: Pattern::parse(PatternType::Doms, parts[3])?,
-            month: Pattern::parse(PatternType::Months, parts[4])?,
-            dow: Pattern::parse(PatternType::Dows, parts[5])?,
-            year: Pattern::parse(PatternType::Years, parts[6])?,
+            second: Pattern::parse(PatternType::Seconds, elements[0])?,
+            minute: Pattern::parse(PatternType::Minutes, elements[1])?,
+            hour: Pattern::parse(PatternType::Hours, elements[2])?,
+            dom: Pattern::parse(PatternType::Doms, elements[3])?,
+            month: Pattern::parse(PatternType::Months, elements[4])?,
+            dow: Pattern::parse(PatternType::Dows, elements[5])?,
+            year: Pattern::parse(PatternType::Years, elements[6])?,
         };
 
-        // Validate DOM and DOW relationship
+        // Validate DOM and DOW relationship.
         match (schedule.dom.pattern(), schedule.dow.pattern()) {
             (PatternItem::Any, PatternItem::Any) => return Err(CronError::InvalidDaysPattern(pattern)),
             (PatternItem::All, _) | (_, PatternItem::All) | (PatternItem::Any, _) | (_, PatternItem::Any) => {}
@@ -87,7 +89,7 @@ impl Schedule {
         let mut hour = Some(current.hour() as PatternValueType);
         let mut minute = Some(current.minute() as PatternValueType);
         let mut second = Some(current.second() as PatternValueType);
-        let mut first_iteration = true;
+        let mut first_iteration = true; // since we don't have `util` loop
 
         while year.is_none()
             || month.is_none()
@@ -99,6 +101,7 @@ impl Schedule {
         {
             first_iteration = false;
 
+            // Jump over to the next possible value is needed.
             if year.is_none() {
                 return None;
             } else if month.is_none() {
@@ -125,11 +128,14 @@ impl Schedule {
                 )
                 .unwrap();
 
+            // Calculate the next possible valid date/time from the current,
+            // with leaping to the first day/hour/... when the current element was changed.
             year = self.year.next(&mut current);
             if year.is_some() {
                 month = self.month.next(&mut current);
                 year = Some(current.year() as PatternValueType);
                 if month.is_some() {
+                    // Prepare day od month depending on DOM/DOW pattern types.
                     dom = match (self.dom.pattern(), self.dow.pattern()) {
                         (PatternItem::All, PatternItem::All) => self.dom.next(&mut current),
                         (PatternItem::All, PatternItem::Any) => self.dom.next(&mut current),
@@ -200,6 +206,8 @@ impl Schedule {
     }
 }
 
+/// Contains iterator state.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct ScheduleIterator<Tz: TimeZone> {
     schedule: Schedule,
     next: Option<DateTime<Tz>>,
@@ -251,6 +259,7 @@ impl Display for Schedule {
     }
 }
 
+/// Increments current year and set all other elements to the first valid value.
 #[inline]
 fn inc_year(
     year: &mut Option<PatternValueType>,
@@ -275,6 +284,7 @@ fn inc_year(
     }
 }
 
+/// Increments current month and set all other elements to the first valid value.
 #[inline]
 fn inc_month(
     year: &mut Option<PatternValueType>,
@@ -298,6 +308,7 @@ fn inc_month(
     }
 }
 
+/// Increments current day of month and set all other elements to the first valid value.
 #[inline]
 fn inc_dom(
     year: &mut Option<PatternValueType>,
@@ -320,6 +331,7 @@ fn inc_dom(
     }
 }
 
+/// Increments current hour and set all other elements to the first valid value.
 #[inline]
 fn inc_hour(
     year: &mut Option<PatternValueType>,
@@ -341,6 +353,7 @@ fn inc_hour(
     }
 }
 
+/// Increments current minute and set all other elements to the first valid value.
 #[inline]
 fn inc_minute(
     year: &mut Option<PatternValueType>,

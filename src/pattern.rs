@@ -7,8 +7,10 @@ use crate::{
 use chrono::{DateTime, Datelike, TimeZone, Timelike};
 use std::{collections::BTreeSet, fmt::Display};
 
+/// Common type for internal values of date and time parts.
 pub(crate) type PatternValueType = u16;
 
+/// Pattern is a single element (part) of a schedule expression.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Pattern {
     type_: PatternType,
@@ -17,10 +19,12 @@ pub(crate) struct Pattern {
 
 impl Pattern {
     #[inline]
+    /// Getter for pattern reference.
     pub(crate) fn pattern(&self) -> &PatternItem {
         &self.pattern
     }
 
+    /// Parses and validates single element of schedule expression.
     pub(crate) fn parse(type_: PatternType, input: &str) -> Result<Self> {
         if input.is_empty() {
             return Err(CronError::InvalidCronPattern(input.to_owned(), type_.to_string()));
@@ -33,18 +37,27 @@ impl Pattern {
                 if value == "*" {
                     Ok(PatternItem::All)
                 } else if value == "?" && [PatternType::Dows, PatternType::Doms].contains(&type_) {
+                    // valid for DOM and DOW element types
                     Ok(PatternItem::Any)
                 } else if value.ends_with('L') && type_ == PatternType::Dows {
+                    // finishing `L` is allowed in the DOW element only
                     let value = value.trim_end_matches('L');
                     Ok(PatternItem::LastDow(type_.parse(value)?))
                 } else if value == "L" && type_ == PatternType::Doms {
+                    // single `L` is allowed in the DOM element only
                     Ok(PatternItem::LastDom)
                 } else if value.ends_with('W') && type_ == PatternType::Doms {
+                    // the nearest weekday is allowed in the DOM only
                     let value = value.trim_end_matches('W');
                     Ok(PatternItem::Weekday(type_.parse(value)?))
                 } else if value.contains('/') && type_ != PatternType::Dows {
+                    // two types of a repeating element:
+                    // - with particular starting value,
+                    //   finishing value is the max possible for this type;
+                    // - and with range of possible values.
                     let (base, repeater) = value.split_once('/').unwrap();
                     let base = if base == "*" {
+                        // `*` means we start from the minimum possible value
                         match type_ {
                             PatternType::Doms | PatternType::Months => "1",
                             PatternType::Years => MIN_YEAR_STR,
@@ -76,6 +89,7 @@ impl Pattern {
                         Ok(PatternItem::RepeatingValue(type_.parse(base)?, repeater))
                     }
                 } else if value.contains('-') {
+                    // Range
                     let (start, end) = value.split_once('-').unwrap();
                     let start = type_.parse(start)?;
                     let end = type_.parse(end)?;
@@ -84,6 +98,7 @@ impl Pattern {
                     }
                     Ok(PatternItem::Range(start, end))
                 } else if value.contains('#') && type_ == PatternType::Dows {
+                    // Sharp/hash is allowed for day of week only
                     let mut parts = value.split('#');
                     let dow = parts.next().unwrap();
                     let number = parts.next().unwrap();
@@ -93,9 +108,12 @@ impl Pattern {
                     }
                     Ok(PatternItem::Hash(type_.parse(dow)?, number.unwrap()))
                 } else {
+                    // everything else is a defined single (particular) value
                     Ok(PatternItem::Particular(type_.parse(value)?))
                 }
             })
+            // we use this to detect that at least one element of the list has an error, so
+            // a whole pattern should be invalidated
             .scan(&mut error_indicator, |err, res| match res {
                 Ok(o) => Some(o),
                 Err(e) => {
@@ -105,8 +123,11 @@ impl Pattern {
             })
             .collect::<Vec<_>>();
 
+        // we use this to detect that at least one element of the list has an error, so
+        // a whole pattern should be invalidated
         error_indicator?;
 
+        // sanity checks
         if splitted.is_empty()
             || (splitted.len() > 1 && (splitted.contains(&PatternItem::All) || splitted.contains(&PatternItem::Any)))
         {
@@ -122,7 +143,10 @@ impl Pattern {
         Ok(Self { type_, pattern })
     }
 
+    /// Returns next possible and valid value of this pattern element,
+    /// starting form the current timestamp (inclusively) or None.
     pub(crate) fn next<Tz: TimeZone>(&self, current: &mut DateTime<Tz>) -> Option<PatternValueType> {
+        // determine max element value depending on its type
         let max = if self.type_ == PatternType::Doms || self.type_ == PatternType::Dows {
             days_in_month(current.year() as PatternValueType, current.month() as PatternValueType)
         } else {
@@ -130,6 +154,7 @@ impl Pattern {
             max
         };
 
+        // we start calculations from the current value of the element
         let start = match self.type_ {
             PatternType::Seconds => current.second() as PatternValueType,
             PatternType::Minutes => current.minute() as PatternValueType,
@@ -141,6 +166,8 @@ impl Pattern {
 
         let value: Option<PatternValueType> = match &self.pattern {
             PatternItem::List(values) => {
+                // iterate over all elements of the list and determine the minimum
+                // possible valid value if it exists
                 let mut min: Option<PatternValueType> = None;
 
                 for pattern in values {
@@ -161,7 +188,9 @@ impl Pattern {
                 }
                 min
             }
+            // just the first possible in a row
             PatternItem::All => Some(start),
+            // specific single value if not DOW
             PatternItem::Particular(value) if self.type_ != PatternType::Dows => {
                 if *value >= start && *value <= max {
                     Some(*value)
@@ -169,6 +198,7 @@ impl Pattern {
                     None
                 }
             }
+            // or day of month for specific day of week
             PatternItem::Particular(value) if self.type_ == PatternType::Dows => (start..=max).find(|&day| {
                 utils::day_of_week(
                     current.year() as PatternValueType,
@@ -176,6 +206,7 @@ impl Pattern {
                     day,
                 ) == *value
             }),
+            // the first value in a range >= than start
             PatternItem::Range(begin, end) if self.type_ != PatternType::Dows => {
                 SeriesWithStep::new(*begin, *end, 1, *begin)
                     .filter(|v| *v >= start && *v <= max)
@@ -183,6 +214,7 @@ impl Pattern {
                     .first()
                     .copied()
             }
+            // the same, but for DOW range we return day of month represented by DOW
             PatternItem::Range(first_dow, last_dow) if self.type_ == PatternType::Dows => (start..=max).find(|&day| {
                 let dow = utils::day_of_week(
                     current.year() as PatternValueType,
@@ -198,7 +230,6 @@ impl Pattern {
                     .first()
                     .copied()
             }
-
             PatternItem::RepeatingRange(min, max, step) => SeriesWithStep::new(*min, *max, *step, *min)
                 .filter(|v| *v >= start)
                 .collect::<BTreeSet<_>>()
@@ -245,10 +276,15 @@ impl Pattern {
                     None
                 }
             }
+            // theoretically, we shouldn't call this `next` method for indifferent types.
             PatternItem::Any => None,
             _ => unreachable!(),
         };
 
+        // if we got value greater than current,
+        // we have to update all dependent elements to the first valid values,
+        // because we leaped over to the next day/hour/minute/...
+        // and should start from the beginning
         if let Some(value) = value {
             if value > start {
                 match self.type_ {
@@ -299,6 +335,7 @@ impl Display for Pattern {
     }
 }
 
+/// Represents a type of the pattern element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum PatternType {
     Seconds,
@@ -334,6 +371,7 @@ impl PatternType {
         "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
     ];
 
+    /// Returns minimum and maximum valid value of specific pattern element type.
     fn min_max(&self) -> (PatternValueType, PatternValueType) {
         match self {
             Self::Seconds => (0, 59),
@@ -346,7 +384,9 @@ impl PatternType {
         }
     }
 
+    /// Parse a single value of the particular pattern element, depending on an element type.
     fn parse(&self, input: &str) -> Result<PatternValueType> {
+        // determine valid ranges
         let (min, max) = self.min_max();
         let (variants, starter_shift) = match self {
             PatternType::Seconds
@@ -358,6 +398,7 @@ impl PatternType {
             PatternType::Dows => (Self::DAYS_OF_WEEK.to_vec(), 0),
         };
 
+        // and convert string to the unsigned integer
         match self {
             PatternType::Seconds
             | PatternType::Minutes
@@ -383,6 +424,7 @@ impl PatternType {
     }
 }
 
+/// Represents a schedule of the whole pattern element, including lists.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum PatternItem {
     All,

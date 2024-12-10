@@ -1,5 +1,7 @@
+/// Generator of numbers series.
 use std::ops::{Add, AddAssign};
 
+/// Generator (iterator) state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SeriesWithStep<T: Copy> {
     max: T,
@@ -12,8 +14,10 @@ where
     T: Copy + Add + AddAssign + PartialOrd,
     <T as Add>::Output: PartialOrd<T>,
 {
-    // Caller is responsible to ensure that
-    // maximum serial value (max+step) isn't greater than type's maximum.
+    /// Caller is responsible to ensure that
+    /// maximum serial value (max+step) isn't greater than type's maximum.
+    ///
+    /// Panics if one of the parameters is out of bounds.
     #[inline]
     pub(crate) fn new(min: T, max: T, step: T, start: T) -> Self {
         if max < min {
