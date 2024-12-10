@@ -14,7 +14,7 @@ version = "0.1.0"
 exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".gitignore", "mutants.*/**"]
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
+chrono = { version = "0.4.20", default-features = false, features = ["std", "now"] }
 
 [dev-dependencies]
 rstest = { version = "0.23.0", default-features = false }
