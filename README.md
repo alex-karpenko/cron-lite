@@ -16,7 +16,7 @@ This is a tiny crate, intended to:
 - parse almost all kinds of popular cron schedule formats;
 - generate series of timestamps according to the schedule.
 
-It has the single external dependency - [chrono](https://crates.io/crates/chrono).
+It has a single external dependency - [chrono](https://crates.io/crates/chrono).
 
 _This is not a cron jobs scheduler or runner._ If you need a scheduler/runner, look
 for [sacs](https://crates.io/crates/sacs) of
@@ -25,7 +25,7 @@ any [other similar crate](https://crates.io/search?q=async%20cron%20scheduler).
 ## Cron schedule format
 
 Traditionally, cron schedule expression has a 5-fields format: minutes, hours, days, months and days of week.
-This crate uses such format by default, but two optional fields may be added, seconds and years:
+This crate uses such a format by default, but two optional fields may be added, seconds and years:
 
 - if _seconds_ is empty, `0` is used by default;
 - if _years_ is empty, `*` is used by default;
@@ -34,7 +34,7 @@ This crate uses such format by default, but two optional fields may be added, se
 The table below describes valid values and patterns of each field:
 
 | Field        | Required | Allowed values  | Allowed special characters |
-| ------------ | -------- | --------------- | -------------------------- |
+|--------------|----------|-----------------|----------------------------|
 | Seconds      | No       | 0-59            | * , - /                    |
 | Minutes      | Yes      | 0-59            | * , - /                    |
 | Hours        | Yes      | 0-23            | * , - /                    |
