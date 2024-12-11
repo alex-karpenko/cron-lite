@@ -40,7 +40,17 @@ impl Schedule {
         let mut elements: Vec<&str> = pattern.split_whitespace().collect();
 
         // Check the number of elements in the provided expression and augment it with defaults.
-        if elements.len() == 5 {
+        if elements.len() == 1 {
+            // Check fo aliases
+            match elements[0] {
+                "@yearly" | "@annually" => elements = vec!["0", "0", "0", "1", "1", "?", "*"],
+                "@monthly" => elements = vec!["0", "0", "0", "1", "*", "?", "*"],
+                "@weekly" => elements = vec!["0", "0", "0", "?", "*", "0", "*"],
+                "@daily" | "@midnight" => elements = vec!["0", "0", "0", "*", "*", "*", "*"],
+                "@hourly" => elements = vec!["0", "0", "*", "*", "*", "*", "*"],
+                _ => return Err(CronError::InvalidCronSchedule(pattern)),
+            }
+        } else if elements.len() == 5 {
             elements.insert(0, "0");
             elements.insert(6, "*");
         } else if elements.len() == 6 {
@@ -516,6 +526,13 @@ mod tests {
     #[case("1 2 29-31 * *", "2025-01-01T00:00:21Z", "2025-01-29T02:01:00+00:00")]
     #[case("1 2 29-31 * *", "2025-02-01T00:00:21Z", "2025-03-29T02:01:00+00:00")]
     #[case("1 2 29-31 * *", "2025-03-31T00:00:21Z", "2025-03-31T02:01:00+00:00")]
+    #[case("@yearly", "2025-03-31T00:00:21Z", "2026-01-01T00:00:00+00:00")]
+    #[case("@annually", "2025-03-31T00:00:21Z", "2026-01-01T00:00:00+00:00")]
+    #[case("@monthly", "2025-03-31T00:00:21Z", "2025-04-01T00:00:00+00:00")]
+    #[case("@weekly", "2025-03-31T00:00:21Z", "2025-04-06T00:00:00+00:00")]
+    #[case("@daily", "2025-03-31T00:00:21Z", "2025-04-01T00:00:00+00:00")]
+    #[case("@midnight", "2025-03-31T00:00:21Z", "2025-04-01T00:00:00+00:00")]
+    #[case("@hourly", "2025-03-31T00:00:21Z", "2025-03-31T01:00:00+00:00")]
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
         let schedule = Schedule::new(pattern).unwrap();
@@ -842,6 +859,13 @@ mod tests {
     #[case("23 0-20/2 * * *", "0 23 0-20/2 * * * *")]
     #[case("30 0 1 1 * *", "30 0 1 1 * * *")]
     #[case("5,10,15,20 * * * *", "0 5,10,15,20 * * * * *")]
+    #[case("@yearly", "0 0 0 1 1 ? *")]
+    #[case("@annually", "0 0 0 1 1 ? *")]
+    #[case("@monthly", "0 0 0 1 * ? *")]
+    #[case("@weekly", "0 0 0 ? * 0 *")]
+    #[case("@daily", "0 0 0 * * * *")]
+    #[case("@midnight", "0 0 0 * * * *")]
+    #[case("@hourly", "0 0 * * * * *")]
     fn valid_schedules_to_test(#[case] input: &str) {}
 
     #[apply(valid_schedules_to_test)]
@@ -997,6 +1021,7 @@ mod tests {
     #[case("* * * * 2/2")]
     #[case("0 1 2 3 * * 1969")]
     #[case("0 0 0 ? * 6-1")]
+    #[case("@minutely")]
     fn invalid_schedules_to_test(#[case] input: &str) {}
 
     #[apply(invalid_schedules_to_test)]
