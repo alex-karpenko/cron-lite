@@ -16,6 +16,9 @@ pub(crate) const MIN_YEAR_STR: &str = "1970";
 ///
 /// For cron schedule clarification and usage examples, please refer to the [crate documentation](crate).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String"))]
+#[cfg_attr(feature = "serde", serde(into = "String"))]
 pub struct Schedule {
     year: Pattern,
     month: Pattern,
@@ -29,7 +32,7 @@ pub struct Schedule {
 impl Schedule {
     /// Parses and validates provided `pattern` and constructs [`Schedule`] instance.
     ///
-    /// Alternative way to construct [`Schedule`] is to use one of `try_from` methods.
+    /// Alternative way to construct [`Schedule`] is to use one of `try_from` or `from_str` methods .
     ///
     /// Returns [`CronError`] in a case provided pattern is unparsable or has format errors.
     pub fn new(pattern: impl Into<String>) -> Result<Self> {
@@ -222,6 +225,18 @@ impl<Tz: TimeZone> Iterator for ScheduleIterator<Tz> {
             .schedule
             .upcoming(&current.clone().checked_add_signed(TimeDelta::seconds(1))?);
         Some(current)
+    }
+}
+
+impl From<Schedule> for String {
+    fn from(value: Schedule) -> Self {
+        value.to_string()
+    }
+}
+
+impl From<&Schedule> for String {
+    fn from(value: &Schedule) -> Self {
+        value.to_string()
     }
 }
 
@@ -1043,5 +1058,16 @@ mod tests {
                 "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
             );
         }
+    }
+
+    #[apply(valid_schedules_to_test)]
+    fn test_schedule_to_string(#[case] input: &str, #[case] expected: &str) {
+        let schedule = Schedule::new(input).unwrap();
+
+        let string: String = (&schedule).into();
+        assert_eq!(string, expected);
+
+        let string: String = schedule.into();
+        assert_eq!(string, expected);
     }
 }

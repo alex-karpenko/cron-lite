@@ -5,7 +5,7 @@
 //! - parse almost all kinds of popular cron schedule formats;
 //! - generate series of timestamps according to the schedule.
 //!
-//! It has the single external dependency - [chrono](https://crates.io/crates/chrono).
+//! It has a single external dependency - [chrono](https://crates.io/crates/chrono).
 //!
 //! _This is not a cron jobs scheduler or runner._ If you need a scheduler/runner,
 //! look for [sacs](https://crates.io/crates/sacs)
@@ -14,7 +14,7 @@
 //! ## Cron schedule format
 //!
 //! Traditionally, cron schedule expression has a 5-fields format: minutes, hours, days, months and days of week.
-//! This crate uses such format by default, but two optional fields may be added, seconds and years:
+//! This crate uses such a format by default, but two optional fields may be added, seconds and years:
 //! - if _seconds_ is empty, `0` is used by default;
 //! - if _years_ is empty, `*` is used by default;
 //! - if 6-fields schedule is specified, then _seconds_ filed is assumed as first and years as empty (default).
@@ -85,6 +85,9 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+//! # Feature flags
+//! * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [`Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for [`Schedule`].
 
 /// Crate specific Error implementation.
 pub mod error;

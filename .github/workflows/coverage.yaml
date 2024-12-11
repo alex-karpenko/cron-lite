@@ -27,7 +27,7 @@ jobs:
           CI: true
           RUSTFLAGS: -Cinstrument-coverage
           LLVM_PROFILE_FILE: cron-lite-%p-%m.profraw
-        run: cargo test --all -- --include-ignored
+        run: cargo test --all --all-features -- --include-ignored
 
       - name: Generate coverage
         run: |

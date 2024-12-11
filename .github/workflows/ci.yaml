@@ -33,7 +33,7 @@ jobs:
 
       - name: Clippy
         run: |
-          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets --all-features -- -D warnings
           cargo clippy --examples -- -D warnings
 
       - name: Build
@@ -43,4 +43,21 @@ jobs:
         run: cargo doc --no-deps
 
       - name: Tests
-        run: cargo test --all
+        run: cargo test --all --all-features
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      - name: Check feature-powerset
+        run: cargo hack check --no-dev-deps --feature-powerset
+
+      - name: Check each-feature
+        run: cargo hack check --no-dev-deps --each-feature
+
+      - name: Tests feature-powerset
+        run: cargo hack test --feature-powerset
+
+      - name: Tests each-feature
+        run: cargo hack test --each-feature
