@@ -56,6 +56,16 @@ Patterns meanings:
 - `?` - for days of month or week means that value doesn't matter: if day of month is specified (not `*`), then day of
   week should be `?` and vise versa.
 
+Also, short aliases for well-known schedule expressions are allowed:
+
+| Alias                      | Expression    |
+|----------------------------|---------------|
+| `@yearly` (or `@annually`) | 0 0 0 1 1 ? * |
+| `@monthly`                 | 0 0 0 1 * ? * |
+| `@weekly`                  | 0 0 0 ? * 0 * |
+| `@daily` (or `@midnight`)  | 0 0 0 * * * * |
+| `@hourly`                  | 0 0 * * * * * |
+
 Some additional information and fields description and relationships may be
 found [here](https://en.wikipedia.org/wiki/Cron#Cron_expression) (this is not complete or exceptional documentation).
 
@@ -107,9 +117,9 @@ fn main() -> Result<()> {
 - [ ] Descriptive example.
 - [ ] Performance tests.
 - [ ] More unit tests for edge cases.
-- [ ] Aliases: `@yearly`, `@annually`, `@monthly`, `@daily`, `@midnight`, `@hourly`.
+- [x] Aliases: `@yearly`, `@annually`, `@monthly`, `@daily`, `@midnight`, `@hourly`.
 - [ ] Feature `tz`: timezone-aware schedule pattern.
-- [ ] Feature `serde`: implement Serialize/Deserialize traits for `Schedule`.
+- [x] Feature `serde`: implement Serialize/Deserialize traits for `Schedule`.
 
 ## License
 
