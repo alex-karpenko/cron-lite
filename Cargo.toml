@@ -4,7 +4,7 @@ authors = ["Oleksii Karpenko <alexkarpenko@yahoo.com>"]
 categories = ["date-and-time", "parser-implementations"]
 description = "Lightweight cron expressions parser and time series generator"
 edition = "2021"
-rust-version = "1.67.1"
+rust-version = "1.74"
 homepage = "https://github.com/alex-karpenko/cron-lite"
 keywords = ["time", "cron", "schedule", "repeat", "periodic"]
 license = "MIT"
@@ -23,5 +23,10 @@ serde = { version = "1.0", default-features = false, features = ["derive", "std"
 
 [dev-dependencies]
 chrono = { version = "0.4.20", default-features = false, features = ["now"] }
+criterion = "0.5.1"
 rstest = { version = "0.23.0", default-features = false }
 rstest_reuse = { version = "0.7.0", default-features = false }
+
+[[bench]]
+name = "schedule"
+harness = false

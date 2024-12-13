@@ -16,7 +16,7 @@ jobs:
         rust:
           - stable
           - beta
-          - 1.67.1
+          - 1.74
 
     steps:
       - uses: actions/checkout@v4
@@ -61,3 +61,12 @@ jobs:
 
       - name: Tests each-feature
         run: cargo hack test --each-feature
+
+  semver-checks:
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2

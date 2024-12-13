@@ -366,8 +366,8 @@ impl Display for PatternType {
 }
 
 impl PatternType {
-    const DAYS_OF_WEEK: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
-    const MONTHS: [&str; 12] = [
+    const DAYS_OF_WEEK: [&'static str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+    const MONTHS: [&'static str; 12] = [
         "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
     ];
 
