@@ -16,7 +16,7 @@ jobs:
         rust:
           - stable
           - beta
-          - 1.67.1
+          - 1.74
 
     steps:
       - uses: actions/checkout@v4
