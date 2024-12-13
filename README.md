@@ -11,7 +11,7 @@ Lightweight cron expressions parser and time series generator.
 <a href="https://github.com/alex-karpenko/cron-lite/blob/HEAD/LICENSE" rel="nofollow"><img src="https://img.shields.io/github/license/alex-karpenko/cron-lite" alt="License"></a>
 </p>
 
-This is a tiny crate, intended to:
+This tiny crate is intended to:
 
 - parse almost all kinds of popular cron schedule formats;
 - generate series of timestamps according to the schedule.
@@ -34,7 +34,7 @@ This crate uses such a format by default, but two optional fields may be added, 
 The table below describes valid values and patterns of each field:
 
 | Field        | Required | Allowed values  | Allowed special characters |
-|--------------|----------|-----------------|----------------------------|
+| ------------ | -------- | --------------- | -------------------------- |
 | Seconds      | No       | 0-59            | * , - /                    |
 | Minutes      | Yes      | 0-59            | * , - /                    |
 | Hours        | Yes      | 0-23            | * , - /                    |
@@ -59,7 +59,7 @@ Patterns meanings:
 Also, short aliases for well-known schedule expressions are allowed:
 
 | Alias                      | Expression    |
-|----------------------------|---------------|
+| -------------------------- | ------------- |
 | `@yearly` (or `@annually`) | 0 0 0 1 1 ? * |
 | `@monthly`                 | 0 0 0 1 * ? * |
 | `@weekly`                  | 0 0 0 ? * 0 * |
@@ -115,7 +115,7 @@ fn main() -> Result<()> {
 ## TODO
 
 - [ ] Descriptive example.
-- [ ] Performance tests.
+- [x] Performance tests.
 - [ ] More unit tests for edge cases.
 - [x] Aliases: `@yearly`, `@annually`, `@monthly`, `@daily`, `@midnight`, `@hourly`.
 - [ ] Feature `tz`: timezone-aware schedule pattern.
