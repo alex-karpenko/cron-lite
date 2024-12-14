@@ -56,7 +56,7 @@
 //! ### Schedule with timezone
 //! If `tz` feature is enabled, it's possible to prefix cron schedule with timezone, for example:
 //! - `TZ=Europe/Paris @monthly`
-//! - `TZ=PST 0 12 * * *`
+//! - `TZ=EET 0 12 * * *`
 //!
 //! ## How to use
 //!

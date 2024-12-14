@@ -1188,8 +1188,7 @@ mod tests {
         #[case("TZ=Asia/Tokyo @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
         #[case("Tz=Asia/Tokyo @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
         #[case("tz=Asia/Tokyo @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
-        #[case("tz=Europe/Paris @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
-        #[case("tz=PST @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
+        #[case("tz=Europe/Paris @yearly", "TZ=Europe/Paris 0 0 0 1 1 ? *")]
         fn valid_schedules_to_test(#[case] input: &str, #[case] expected: &str) {}
 
         #[apply(valid_schedules_to_test)]

@@ -100,4 +100,11 @@ mod tests {
         let error = CronError::InvalidRepeatingPattern("*/0".to_string(), "minutes".to_string());
         assert_eq!(error.to_string(), "minutes: invalid repeating pattern: */0");
     }
+
+    #[cfg(feature = "tz")]
+    #[test]
+    fn test_invalid_tz() {
+        let error = CronError::InvalidTimeZone("qqq".to_string());
+        assert_eq!(error.to_string(), "invalid time zone: qqq");
+    }
 }
