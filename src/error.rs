@@ -19,6 +19,9 @@ pub enum CronError {
     InvalidRangeValue(String, String),
     /// Invalid repeating pattern.
     InvalidRepeatingPattern(String, String),
+    /// Invalid TimeZone
+    #[cfg(feature = "tz")]
+    InvalidTimeZone(String),
 }
 
 impl Error for CronError {}
@@ -40,6 +43,8 @@ impl Display for CronError {
             CronError::InvalidRepeatingPattern(pattern, type_) => {
                 write!(f, "{type_}: invalid repeating pattern: {}", pattern)
             }
+            #[cfg(feature = "tz")]
+            CronError::InvalidTimeZone(tz) => write!(f, "invalid time zone: {}", tz),
         }
     }
 }

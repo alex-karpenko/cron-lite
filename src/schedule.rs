@@ -3,6 +3,8 @@ use crate::{
     utils, CronError, Result,
 };
 use chrono::{DateTime, Datelike, TimeDelta, TimeZone, Timelike};
+#[cfg(feature = "tz")]
+use chrono_tz::Tz;
 use std::{fmt::Display, str::FromStr};
 
 /// Minimum valid year.
@@ -15,10 +17,11 @@ pub(crate) const MIN_YEAR_STR: &str = "1970";
 /// Represents a cron schedule pattern with its methods.
 ///
 /// For cron schedule clarification and usage examples, please refer to the [crate documentation](crate).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "String"))]
 #[cfg_attr(feature = "serde", serde(into = "String"))]
+#[cfg_attr(not(feature = "tz"), derive(PartialOrd, Ord))]
 pub struct Schedule {
     year: Pattern,
     month: Pattern,
@@ -27,6 +30,8 @@ pub struct Schedule {
     hour: Pattern,
     minute: Pattern,
     second: Pattern,
+    #[cfg(feature = "tz")]
+    tz: Option<chrono_tz::Tz>,
 }
 
 impl Schedule {
@@ -38,6 +43,23 @@ impl Schedule {
     pub fn new(pattern: impl Into<String>) -> Result<Self> {
         let pattern = pattern.into();
         let mut elements: Vec<&str> = pattern.split_whitespace().collect();
+        #[cfg(feature = "tz")]
+        let mut tz = None;
+
+        // Parse and define TZ, if present
+        #[cfg(feature = "tz")]
+        if elements.len() >= 2 {
+            let tz_elements: Vec<&str> = elements[0].split('=').collect();
+            if tz_elements.len() == 2 && tz_elements[0].to_uppercase() == "TZ" {
+                let tz_str = tz_elements[1];
+                if let Ok(tz_value) = Tz::from_str(tz_str) {
+                    tz = Some(tz_value);
+                    elements.remove(0);
+                } else {
+                    return Err(CronError::InvalidTimeZone(tz_str.to_string()));
+                }
+            }
+        }
 
         // Check the number of elements in the provided expression and augment it with defaults.
         if elements.len() == 1 {
@@ -68,6 +90,8 @@ impl Schedule {
             month: Pattern::parse(PatternType::Months, elements[4])?,
             dow: Pattern::parse(PatternType::Dows, elements[5])?,
             year: Pattern::parse(PatternType::Years, elements[6])?,
+            #[cfg(feature = "tz")]
+            tz,
         };
 
         // Validate DOM and DOW relationship.
@@ -82,10 +106,42 @@ impl Schedule {
         Ok(schedule)
     }
 
+    /// Return time of the upcoming cron event, starting from the provided `current` value (inclusively).
+    ///
+    /// If `tz` feature isn't enabled,
+    /// this method assumes that schedule timezone is the same as timezone of the provided `current` instance.
+    ///
+    /// If `tz` feature is enabled and [schedule uses timezone](crate#schedule-with-timezone),
+    /// then method calculates time of the upcoming event with respect to the schedule's timezone:
+    /// - converts `current` into schedule timezone;
+    /// - calculates upcoming event time;
+    /// - converts obtained upcoming value back to the timezone of the `current` instance.
+    ///
+    /// Returns `None` if there is no time of the upcoming event.
+    #[cfg(not(feature = "tz"))]
+    #[inline]
+    pub fn upcoming<T: TimeZone>(&self, current: &DateTime<T>) -> Option<DateTime<T>> {
+        self.upcoming_impl(current)
+    }
+
+    /// Doc is above.
+    #[cfg(feature = "tz")]
+    pub fn upcoming<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
+        if let Some(schedule_tz) = &self.tz {
+            let current_tz = current.timezone();
+            let current = current.with_timezone(schedule_tz);
+            let result = self.upcoming_impl(&current);
+            result.map(|dt| dt.with_timezone(&current_tz))
+        } else {
+            self.upcoming_impl(current)
+        }
+    }
+
     /// Return time of the upcoming cron event starting from (including) provided `current` value.
     ///
     /// Returns `None` if there is no upcoming event's time.
-    pub fn upcoming<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
+    fn upcoming_impl<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
+        // Normalize current time to the start of the whole second.
         let mut current = if current.nanosecond() > 0 {
             current
                 .with_nanosecond(0)
@@ -220,7 +276,8 @@ impl Schedule {
 }
 
 /// Contains iterator state.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(not(feature = "tz"), derive(PartialOrd, Ord))]
 struct ScheduleIterator<Tz: TimeZone> {
     schedule: Schedule,
     next: Option<DateTime<Tz>>,
@@ -284,11 +341,29 @@ impl FromStr for Schedule {
 
 impl Display for Schedule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} {} {} {} {} {} {}",
-            self.second, self.minute, self.hour, self.dom, self.month, self.dow, self.year
-        )
+        #[cfg(not(feature = "tz"))]
+        {
+            write!(
+                f,
+                "{} {} {} {} {} {} {}",
+                self.second, self.minute, self.hour, self.dom, self.month, self.dow, self.year
+            )
+        }
+
+        #[cfg(feature = "tz")]
+        if let Some(tz) = self.tz {
+            write!(
+                f,
+                "TZ={} {} {} {} {} {} {} {}",
+                tz, self.second, self.minute, self.hour, self.dom, self.month, self.dow, self.year
+            )
+        } else {
+            write!(
+                f,
+                "{} {} {} {} {} {} {}",
+                self.second, self.minute, self.hour, self.dom, self.month, self.dow, self.year
+            )
+        }
     }
 }
 
@@ -1094,5 +1169,107 @@ mod tests {
 
         let string: String = schedule.into();
         assert_eq!(string, expected);
+    }
+
+    #[cfg(feature = "tz")]
+    mod tz {
+        use super::super::*;
+        use rstest::rstest;
+        use rstest_reuse::{apply, template};
+        use std::time::Duration;
+
+        #[template]
+        #[rstest]
+        #[case("TZ=Europe/Kyiv * * * * * * *", "TZ=Europe/Kyiv * * * * * * *")]
+        #[case("TZ=Europe/London * * * * * *", "TZ=Europe/London * * * * * * *")]
+        #[case("TZ=UTC * * * * *", "TZ=UTC 0 * * * * * *")]
+        #[case("TZ=US/Pacific */5 * * * *", "TZ=US/Pacific 0 0/5 * * * * *")]
+        #[case("TZ=EET 0 */15 */6 * * *", "TZ=EET 0 0/15 0/6 * * * *")]
+        #[case("TZ=Asia/Tokyo @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
+        #[case("Tz=Asia/Tokyo @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
+        #[case("tz=Asia/Tokyo @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
+        #[case("tz=Europe/Paris @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
+        #[case("tz=PST @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
+        fn valid_schedules_to_test(#[case] input: &str, #[case] expected: &str) {}
+
+        #[apply(valid_schedules_to_test)]
+        fn test_schedule_display_and_new(#[case] input: &str, #[case] expected: &str) {
+            assert_eq!(Schedule::new(input).unwrap().to_string(), expected);
+        }
+
+        #[apply(valid_schedules_to_test)]
+        fn test_try_from_string(#[case] input: &str, #[case] _expected: &str) {
+            // &str
+            let schedule1 = Schedule::new(input).unwrap();
+            let schedule2 = Schedule::try_from(input).unwrap();
+            assert_eq!(schedule1, schedule2);
+
+            // &String
+            let tst_string = String::from(input);
+            let schedule2 = Schedule::try_from(&tst_string).unwrap();
+            assert_eq!(schedule1, schedule2);
+
+            // String
+            let schedule2 = Schedule::try_from(tst_string).unwrap();
+            assert_eq!(schedule1, schedule2);
+
+            // from_str
+            let schedule2 = Schedule::from_str(input).unwrap();
+            assert_eq!(schedule1, schedule2);
+        }
+
+        #[template]
+        #[rstest]
+        #[case("TZ * * * *")]
+        #[case("TZ= * * ? * ?")]
+        #[case("tz=UTC * * 10 * 1")]
+        #[case("TZ=Aaa/Bbb * * * * 2/2")]
+        #[case("TZ=Aaa/Bbb * * * * *")]
+        #[case("TZ =UTC * * * * *")]
+        #[case("TZ= UTC * * * * *")]
+        #[case("TZ = UTC * * * * *")]
+        #[case("TZ= 0 0 0 ? * 1-6")]
+        #[case("tz= @hourly")]
+        fn invalid_schedules_to_test(#[case] input: &str) {}
+
+        #[apply(invalid_schedules_to_test)]
+        fn test_invalid_schedule_constructor(#[case] input: &str) {
+            assert!(Schedule::new(input).is_err(), "input = {input}");
+        }
+
+        #[apply(invalid_schedules_to_test)]
+        fn test_try_from_invalid_string(#[case] input: &str) {
+            assert!(Schedule::try_from(input).is_err(), "input = {input}");
+            assert!(Schedule::from_str(input).is_err(), "input = {input}");
+        }
+
+        #[rstest]
+        #[case("TZ=Europe/Kyiv @monthly", "2025-03-31T00:00:21Z", "2025-03-31T21:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv @monthly", "2025-03-31T00:00:21+02:00", "2025-03-31T23:00:00+02:00")]
+        #[case("TZ=Europe/Kyiv @monthly", "2025-11-30T00:00:21Z", "2025-11-30T22:00:00+00:00")]
+        #[timeout(Duration::from_secs(1))]
+        fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
+            let schedule = Schedule::new(pattern).unwrap();
+            let current = DateTime::parse_from_rfc3339(current).unwrap();
+            let next = schedule.upcoming(&current);
+
+            if expected == "None" {
+                assert!(
+                    next.is_none(),
+                    "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
+                );
+            } else {
+                assert!(
+                    next.is_some(),
+                    "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
+                );
+
+                assert_eq!(
+                    next.unwrap().to_rfc3339(),
+                    expected,
+                    "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
+                );
+            }
+        }
     }
 }
