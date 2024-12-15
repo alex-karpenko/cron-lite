@@ -1268,5 +1268,270 @@ mod tests {
                 );
             }
         }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_schedule_iter() {
+            let schedule = Schedule::new("TZ=UTC 0 0 12 * 1 MON 2024").unwrap();
+            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
+
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T12:00:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-08T12:00:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-15T12:00:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-22T12:00:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-29T12:00:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(iter.next(), None);
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_schedule_iter_every_second() {
+            let schedule = Schedule::new("TZ=EET * * * * * *").unwrap();
+            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
+
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:00:01+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:00:02+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:00:03+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:00:04+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:00:05+00:00",
+                "schedule = {schedule}"
+            );
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_schedule_iter_every_minute() {
+            let schedule = Schedule::new("TZ=Europe/Kyiv * * * * *").unwrap();
+            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
+
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:01:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:02:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:03:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:04:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T00:05:00+00:00",
+                "schedule = {schedule}"
+            );
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_schedule_iter_every_hour() {
+            let schedule = Schedule::new("TZ=Canada/Eastern 13 * * * *").unwrap();
+            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T07:01:01+00:00").unwrap());
+
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T07:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T08:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T09:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T10:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T11:13:00+00:00",
+                "schedule = {schedule}"
+            );
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_schedule_iter_every_day() {
+            let schedule = Schedule::new("TZ=Asia/Tokyo 22 5 * * *").unwrap();
+            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T04:01:01+00:00").unwrap());
+
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-01T20:22:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-02T20:22:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-03T20:22:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-04T20:22:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-05T20:22:00+00:00",
+                "schedule = {schedule}"
+            );
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_schedule_iter_every_month() {
+            let schedule = Schedule::new("TZ=GMT 13 13 12 * *").unwrap();
+            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
+
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-02-12T13:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-03-12T13:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-04-12T13:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-05-12T13:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-06-12T13:13:00+00:00",
+                "schedule = {schedule}"
+            );
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_schedule_iter_every_weekday() {
+            let schedule = Schedule::new("TZ=Antarctica/South_Pole 13 13 ? * *").unwrap();
+            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
+
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-13T00:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-14T00:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-15T00:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-16T00:13:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-01-17T00:13:00+00:00",
+                "schedule = {schedule}"
+            );
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_schedule_iter_every_year() {
+            let schedule = Schedule::new("TZ=Asia/Shanghai 30 12 22 6 ?").unwrap();
+            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2021-01-12T13:13:01+00:00").unwrap());
+
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2021-06-22T04:30:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2022-06-22T04:30:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2023-06-22T04:30:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2024-06-22T04:30:00+00:00",
+                "schedule = {schedule}"
+            );
+            assert_eq!(
+                iter.next().unwrap().to_rfc3339(),
+                "2025-06-22T04:30:00+00:00",
+                "schedule = {schedule}"
+            );
+        }
     }
 }
