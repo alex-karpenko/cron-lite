@@ -10,7 +10,7 @@ keywords = ["time", "cron", "schedule", "repeat", "periodic"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/alex-karpenko/cron-lite"
-version = "0.1.0"
+version = "0.2.0"
 exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".gitignore", "mutants.*/**"]
 
 [features]
