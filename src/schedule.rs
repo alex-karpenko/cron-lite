@@ -2,7 +2,7 @@ use crate::{
     pattern::{Pattern, PatternItem, PatternType, PatternValueType},
     utils, CronError, Result,
 };
-use chrono::{DateTime, Datelike, TimeDelta, TimeZone, Timelike};
+use chrono::{offset::LocalResult, DateTime, Datelike, TimeDelta, TimeZone, Timelike};
 #[cfg(feature = "tz")]
 use chrono_tz::Tz;
 use std::{fmt::Display, str::FromStr};
@@ -184,17 +184,21 @@ impl Schedule {
                 inc_minute(&mut year, &mut month, &mut dom, &mut hour, &mut minute, &mut second)?;
             }
 
-            current = current
-                .timezone()
-                .with_ymd_and_hms(
-                    year? as i32,
-                    month? as u32,
-                    dom? as u32,
-                    hour? as u32,
-                    minute? as u32,
-                    second? as u32,
-                )
-                .unwrap();
+            current = match current.timezone().with_ymd_and_hms(
+                year? as i32,
+                month? as u32,
+                dom? as u32,
+                hour? as u32,
+                minute? as u32,
+                second? as u32,
+            ) {
+                LocalResult::Single(updated_current) => updated_current,
+                LocalResult::Ambiguous(earliest, _latest) => earliest,
+                LocalResult::None => {
+                    minute = None;
+                    continue;
+                }
+            };
 
             // Calculate the next possible valid date/time from the current,
             // with leaping to the first day/hour/... when the current element was changed.
@@ -203,7 +207,7 @@ impl Schedule {
                 month = self.month.next(&mut current);
                 year = Some(current.year() as PatternValueType);
                 if month.is_some() {
-                    // Prepare day od month depending on DOM/DOW pattern types.
+                    // Prepare day of month depending on DOM/DOW pattern types.
                     dom = match (self.dom.pattern(), self.dow.pattern()) {
                         (PatternItem::All, PatternItem::All) => self.dom.next(&mut current),
                         (PatternItem::All, PatternItem::Any) => self.dom.next(&mut current),
@@ -242,19 +246,18 @@ impl Schedule {
             }
         }
 
-        Some(
-            current
-                .timezone()
-                .with_ymd_and_hms(
-                    year? as i32,
-                    month? as u32,
-                    dom? as u32,
-                    hour? as u32,
-                    minute? as u32,
-                    second? as u32,
-                )
-                .unwrap(),
-        )
+        match current.timezone().with_ymd_and_hms(
+            year? as i32,
+            month? as u32,
+            dom? as u32,
+            hour? as u32,
+            minute? as u32,
+            second? as u32,
+        ) {
+            LocalResult::Single(current) => Some(current),
+            LocalResult::Ambiguous(earliest, _latest) => Some(earliest),
+            LocalResult::None => None,
+        }
     }
 
     /// Returns iterator of events starting from `current` (inclusively).
@@ -1244,6 +1247,14 @@ mod tests {
         #[case("TZ=Europe/Kyiv @monthly", "2025-03-31T00:00:21Z", "2025-03-31T21:00:00+00:00")]
         #[case("TZ=Europe/Kyiv @monthly", "2025-03-31T00:00:21+02:00", "2025-03-31T23:00:00+02:00")]
         #[case("TZ=Europe/Kyiv @monthly", "2025-11-30T00:00:21Z", "2025-11-30T22:00:00+00:00")]
+        #[case("TZ=EET @hourly", "2000-03-25T23:00:01Z", "2000-03-26T00:00:00+00:00")]
+        #[case("TZ=EET @hourly", "2000-03-26T00:00:01Z", "2000-03-26T01:00:00+00:00")]
+        #[case("TZ=EET @hourly", "2000-03-26T01:00:01Z", "2000-03-26T02:00:00+00:00")]
+        #[case("TZ=EET @hourly", "2000-10-28T22:00:01Z", "2000-10-28T23:00:00+00:00")]
+        #[case("TZ=EET @hourly", "2000-10-28T23:00:01Z", "2000-10-29T00:00:00+00:00")] // 8
+        #[case("TZ=EET @hourly", "2000-10-29T00:00:01Z", "2000-10-29T02:00:00+00:00")] // 9
+        #[case("TZ=EET @hourly", "2000-10-29T01:00:01Z", "2000-10-29T02:00:00+00:00")] // 10
+        #[case("TZ=EET @hourly", "2000-10-29T02:00:01Z", "2000-10-29T03:00:00+00:00")]
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
             let schedule = Schedule::new(pattern).unwrap();
