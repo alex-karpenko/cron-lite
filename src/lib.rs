@@ -53,6 +53,11 @@
 //!
 //! Some additional information and fields description and relationships may be found [here](https://en.wikipedia.org/wiki/Cron#Cron_expression) (this is not complete or exceptional documentation).
 //!
+//! ### Schedule with timezone
+//! If `tz` feature is enabled, it's possible to prefix cron schedule with timezone, for example:
+//! - `TZ=Europe/Paris @monthly`
+//! - `TZ=EET 0 12 * * *`
+//!
 //! ## How to use
 //!
 //! The single public entity of the crate is a [`Schedule`] structure, which has three basic methods:
@@ -98,6 +103,7 @@
 //!
 //! # Feature flags
 //! * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [`Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for [`Schedule`].
+//! * `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
 
 /// Crate specific Error implementation.
 pub mod error;

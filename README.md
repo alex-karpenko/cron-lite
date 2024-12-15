@@ -34,7 +34,7 @@ This crate uses such a format by default, but two optional fields may be added, 
 The table below describes valid values and patterns of each field:
 
 | Field        | Required | Allowed values  | Allowed special characters |
-| ------------ | -------- | --------------- | -------------------------- |
+|--------------|----------|-----------------|----------------------------|
 | Seconds      | No       | 0-59            | * , - /                    |
 | Minutes      | Yes      | 0-59            | * , - /                    |
 | Hours        | Yes      | 0-23            | * , - /                    |
@@ -59,7 +59,7 @@ Patterns meanings:
 Also, short aliases for well-known schedule expressions are allowed:
 
 | Alias                      | Expression    |
-| -------------------------- | ------------- |
+|----------------------------|---------------|
 | `@yearly` (or `@annually`) | 0 0 0 1 1 ? * |
 | `@monthly`                 | 0 0 0 1 * ? * |
 | `@weekly`                  | 0 0 0 ? * 0 * |
@@ -68,6 +68,13 @@ Also, short aliases for well-known schedule expressions are allowed:
 
 Some additional information and fields description and relationships may be
 found [here](https://en.wikipedia.org/wiki/Cron#Cron_expression) (this is not complete or exceptional documentation).
+
+### Schedule with timezone
+
+If `tz` feature is enabled, it's possible to prefix cron schedule with timezone, for example:
+
+- `TZ=Europe/Paris @monthly`
+- `TZ=EET 0 12 * * *`
 
 ## How to use
 
@@ -112,13 +119,19 @@ fn main() -> Result<()> {
 }
 ```
 
+## Feature flags
+
+* `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [
+  `Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for [`Schedule`].
+* `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
+
 ## TODO
 
 - [ ] Descriptive example.
 - [x] Performance tests.
 - [ ] More unit tests for edge cases.
 - [x] Aliases: `@yearly`, `@annually`, `@monthly`, `@daily`, `@midnight`, `@hourly`.
-- [ ] Feature `tz`: timezone-aware schedule pattern.
+- [x] Feature `tz`: timezone-aware schedule pattern.
 - [x] Feature `serde`: implement Serialize/Deserialize traits for `Schedule`.
 
 ## License
