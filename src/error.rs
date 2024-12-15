@@ -20,7 +20,6 @@ pub enum CronError {
     /// Invalid repeating pattern.
     InvalidRepeatingPattern(String, String),
     /// Invalid TimeZone
-    #[cfg(feature = "tz")]
     InvalidTimeZone(String),
 }
 
@@ -43,7 +42,6 @@ impl Display for CronError {
             CronError::InvalidRepeatingPattern(pattern, type_) => {
                 write!(f, "{type_}: invalid repeating pattern: {}", pattern)
             }
-            #[cfg(feature = "tz")]
             CronError::InvalidTimeZone(tz) => write!(f, "invalid time zone: {}", tz),
         }
     }
@@ -101,7 +99,6 @@ mod tests {
         assert_eq!(error.to_string(), "minutes: invalid repeating pattern: */0");
     }
 
-    #[cfg(feature = "tz")]
     #[test]
     fn test_invalid_tz() {
         let error = CronError::InvalidTimeZone("qqq".to_string());

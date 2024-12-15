@@ -21,7 +21,6 @@ pub(crate) const MIN_YEAR_STR: &str = "1970";
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "String"))]
 #[cfg_attr(feature = "serde", serde(into = "String"))]
-#[cfg_attr(not(feature = "tz"), derive(PartialOrd, Ord))]
 pub struct Schedule {
     year: Pattern,
     month: Pattern,
@@ -31,7 +30,7 @@ pub struct Schedule {
     minute: Pattern,
     second: Pattern,
     #[cfg(feature = "tz")]
-    tz: Option<chrono_tz::Tz>,
+    tz: Option<Tz>,
 }
 
 impl Schedule {
@@ -117,7 +116,7 @@ impl Schedule {
     /// - calculates upcoming event time;
     /// - converts obtained upcoming value back to the timezone of the `current` instance.
     ///
-    /// Returns `None` if there is no time of the upcoming event.
+    /// Returns `None` if there is no time for the upcoming event.
     #[cfg(not(feature = "tz"))]
     #[inline]
     pub fn upcoming<T: TimeZone>(&self, current: &DateTime<T>) -> Option<DateTime<T>> {
@@ -277,7 +276,6 @@ impl Schedule {
 
 /// Contains iterator state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(not(feature = "tz"), derive(PartialOrd, Ord))]
 struct ScheduleIterator<Tz: TimeZone> {
     schedule: Schedule,
     next: Option<DateTime<Tz>>,
