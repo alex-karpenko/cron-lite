@@ -12,9 +12,11 @@ const EXPRESSIONS: &[&str] = &[
     "0 * * * JAN-DEC *",
 ];
 
-const TIME_ZONES: &[&str] = &["UTC", "EET", "Europe/Kyiv"];
 const NOW: &[&str] = &["1999-12-31T23:59:59Z", "2000-01-01T00:00:00Z", "2099-12-31T23:59:59Z"];
 const TAKE_SAMPLES: usize = 10_000;
+
+#[cfg(feature = "tz")]
+const TIME_ZONES: &[&str] = &["UTC", "EET", "Europe/Kyiv"];
 
 pub fn new_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("new");
@@ -26,11 +28,9 @@ pub fn new_benchmark(c: &mut Criterion) {
         #[cfg(feature = "tz")]
         for tz in TIME_ZONES {
             let expression = format!("TZ={tz} {expression}");
-            group.bench_with_input(
-                BenchmarkId::from_parameter(format!("{expression}")),
-                &expression,
-                |b, e| b.iter(|| Schedule::new(e).unwrap()),
-            );
+            group.bench_with_input(BenchmarkId::from_parameter(expression.clone()), &expression, |b, e| {
+                b.iter(|| Schedule::new(e).unwrap())
+            });
         }
     }
     group.finish();
