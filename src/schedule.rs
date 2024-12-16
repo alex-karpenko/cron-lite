@@ -1579,7 +1579,7 @@ mod tests {
             };
 
             let schedule = if let Some(tz) = tz {
-                Schedule::new(&format!("TZ={tz} @hourly")).unwrap()
+                Schedule::new(format!("TZ={tz} @hourly")).unwrap()
             } else {
                 Schedule::new(" @hourly").unwrap()
             };
