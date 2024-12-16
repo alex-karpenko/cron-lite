@@ -1175,9 +1175,10 @@ mod tests {
     #[cfg(feature = "tz")]
     mod tz {
         use super::super::*;
+        use chrono::{Local, Utc};
         use rstest::rstest;
         use rstest_reuse::{apply, template};
-        use std::time::Duration;
+        use std::{fmt::Debug, time::Duration};
 
         #[template]
         #[rstest]
@@ -1543,6 +1544,58 @@ mod tests {
                 "2025-06-22T04:30:00+00:00",
                 "schedule = {schedule}"
             );
+        }
+
+        #[rstest]
+        #[case(Utc, Utc)]
+        #[case(Utc, Local)]
+        #[case(Local, Utc)]
+        #[case(Local, Local)]
+        #[case(chrono_tz::EET, Utc)]
+        #[case(Utc, chrono_tz::EET)]
+        #[case(chrono_tz::EET, Local)]
+        #[case(Local, chrono_tz::EET)]
+        #[case(chrono_tz::EET, chrono_tz::EET)]
+        #[case(chrono_tz::EET, chrono_tz::Canada::Eastern)]
+        #[case(chrono_tz::Canada::Eastern, chrono_tz::EET)]
+        #[timeout(Duration::from_secs(1))]
+        fn test_rough_iterator<T1: TimeZone + Debug, T2: TimeZone + Debug>(
+            #[case] current_tz: T1,
+            #[case] schedule_tz: T2,
+        ) {
+            use std::collections::BTreeSet;
+
+            const TAKE_ITEMS: usize = (365 + 366) * 24 + 3;
+
+            let current = current_tz.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap();
+
+            let tz_str = format!("{:?}", schedule_tz).to_uppercase();
+            let tz = if tz_str == "LOCAL" {
+                None
+            } else if tz_str == "Z" || tz_str == "UTC" {
+                Some(String::from("UTC"))
+            } else {
+                Some(format!("{:?}", schedule_tz))
+            };
+
+            let schedule = if let Some(tz) = tz {
+                Schedule::new(format!("TZ={tz} @hourly")).unwrap()
+            } else {
+                Schedule::new(" @hourly").unwrap()
+            };
+
+            let result = schedule.iter(&current).take(TAKE_ITEMS).collect::<Vec<_>>();
+            assert_eq!(
+                result.len(),
+                TAKE_ITEMS,
+                "current_tz={current_tz:?}, schedule_tz={schedule_tz:?}, schedule='{schedule}', last={}",
+                result[result.len() - 1].to_rfc2822()
+            );
+
+            // find duplicates in result
+            let mut set = BTreeSet::new();
+            set.extend(&result);
+            assert_eq!(set.len(), result.len());
         }
     }
 }

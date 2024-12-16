@@ -7,7 +7,7 @@ fn iter() -> Result<()> {
     let now = Utc::now();
 
     // Get the next 10 timestamps starting from now
-    schedule.iter(&now).take(10).for_each(|t| println!("next: {t}"));
+    schedule.iter(&now).take(20000).for_each(|t| println!("next: {t}"));
 
     Ok(())
 }
@@ -18,7 +18,7 @@ fn into_iter() -> Result<()> {
     let now = Utc::now();
 
     // Get the next 10 timestamps starting from now
-    schedule.into_iter(&now).take(10).for_each(|t| println!("next: {t}"));
+    schedule.into_iter(&now).take(20000).for_each(|t| println!("next: {t}"));
 
     Ok(())
 }
