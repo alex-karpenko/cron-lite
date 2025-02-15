@@ -1,4 +1,4 @@
-# output = "target"
+output = "target"
 additional_cargo_args = ["--all-features"]
 cap_lints = true
 exclude_re = ["src/schedule.rs:123:9: replace Schedule::upcoming -> Option<DateTime<T>> with .*"]
