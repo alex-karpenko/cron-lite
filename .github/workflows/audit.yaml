@@ -8,11 +8,12 @@ on:
       - main
     paths:
       - "**/Cargo.toml"
+      - "**/Cargo.lock"
   pull_request:
 
 jobs:
-  security-audit:
+  cargo-deny-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v1
+      - uses: EmbarkStudios/cargo-deny-action@v2
