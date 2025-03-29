@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2025-03-29
+### Details
+#### Added
+- Add test for iterator continuity with timezones enabled by @alex-karpenko in [#10](https://github.com/alex-karpenko/cron-lite/pull/10)
+
+#### Fixed
+- Increase MSRV to 1.81 by @alex-karpenko in [#12](https://github.com/alex-karpenko/cron-lite/pull/12)
+
 ## [0.2.1] - 2024-12-15
 ### Details
 #### Fixed
@@ -32,6 +40,7 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.2.2]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.1..v0.2.2
 [0.2.1]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.0..v0.2.1
 [0.2.0]: https://github.com/alex-karpenko/cron-lite/compare/v0.1.0..v0.2.0
 
