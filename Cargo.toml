@@ -15,12 +15,14 @@ exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".g
 
 [features]
 default = []
+async = ["dep:futures"]
 serde = ["dep:serde"]
 tz = ["dep:chrono-tz"]
 
 [dependencies]
 chrono = { version = "0.4.20", default-features = false }
 chrono-tz = { version = "0.10.0", default-features = false, optional = true }
+futures = { version = "0.3.31", default-features = false, optional = true, features = ["async-await"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
 
 [dev-dependencies]

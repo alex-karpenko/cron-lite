@@ -34,7 +34,7 @@ This crate uses such a format by default, but two optional fields may be added, 
 The table below describes valid values and patterns of each field:
 
 | Field        | Required | Allowed values  | Allowed special characters |
-|--------------|----------|-----------------|----------------------------|
+| ------------ | -------- | --------------- | -------------------------- |
 | Seconds      | No       | 0-59            | * , - /                    |
 | Minutes      | Yes      | 0-59            | * , - /                    |
 | Hours        | Yes      | 0-23            | * , - /                    |
@@ -59,7 +59,7 @@ Patterns meanings:
 Also, short aliases for well-known schedule expressions are allowed:
 
 | Alias                      | Expression    |
-|----------------------------|---------------|
+| -------------------------- | ------------- |
 | `@yearly` (or `@annually`) | 0 0 0 1 1 ? * |
 | `@monthly`                 | 0 0 0 1 * ? * |
 | `@weekly`                  | 0 0 0 ? * 0 * |
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
 ## Feature flags
 
 * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [
-  `Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for [`Schedule`].
+  `Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for `Schedule`.
 * `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
 
 ## TODO

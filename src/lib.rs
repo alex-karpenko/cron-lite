@@ -105,6 +105,9 @@
 //! * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [`Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for [`Schedule`].
 //! * `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
 
+/// Primitives related to async cron events generation.
+#[cfg(feature = "async")]
+mod asyncronous;
 /// Crate specific Error implementation.
 pub mod error;
 mod pattern;
