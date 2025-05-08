@@ -22,7 +22,7 @@ tz = ["dep:chrono-tz"]
 [dependencies]
 chrono = { version = "0.4.20", default-features = false }
 chrono-tz = { version = "0.10.0", default-features = false, optional = true }
-futures = { version = "0.3.31", default-features = false, optional = true, features = ["async-await"] }
+futures = { version = "0.3.31", default-features = false, features = ["async-await"], optional = true }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
 
 [dev-dependencies]
@@ -30,6 +30,7 @@ chrono = { version = "0.4.20", default-features = false, features = ["now", "clo
 criterion = "0.5.1"
 rstest = { version = "0.25.0", default-features = false }
 rstest_reuse = { version = "0.7.0", default-features = false }
+tokio = { version = "1.45.0", default-features = false, features = ["time", "macros", "rt-multi-thread"] }
 
 [[bench]]
 name = "schedule"

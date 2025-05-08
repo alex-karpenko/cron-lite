@@ -107,7 +107,7 @@
 
 /// Primitives related to async cron events generation.
 #[cfg(feature = "async")]
-mod asyncronous;
+pub mod asyncronous;
 /// Crate specific Error implementation.
 pub mod error;
 mod pattern;
@@ -116,7 +116,12 @@ pub mod schedule;
 mod series;
 mod utils;
 
-/// Re-export of public entities.
+// Re-export of public entities.
+#[cfg(feature = "async")]
+pub use asyncronous::CronEvent;
+#[cfg(feature = "async")]
+pub use asyncronous::CronWaiter;
+
 pub use error::CronError;
 pub use schedule::Schedule;
 
