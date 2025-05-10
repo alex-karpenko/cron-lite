@@ -21,7 +21,7 @@ type ControlChannel = Sender<ControlCmd>;
 
 static KEY_SERIAL: AtomicU16 = AtomicU16::new(0);
 
-/// Represents a kind of the async cron event returned by [`CronWaiter`] or stream.
+/// Represents a kind of the async cron event returned by [`CronSleep`] or stream.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 pub enum CronEvent {
     /// Event happened in time.
@@ -181,7 +181,7 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
                 // Try to push next one
                 if let Some(next) = self.iter.next() {
                     if let Some(until) = next_instant(now_nanos, &next) {
-                        // Got valid event, push it to the waiter thread
+                        // Got valid event, push it to the sleep thread
                         let key = SleepQueueKey::new(until);
                         self.send_cmd(ControlCmd::Insert {
                             key,
@@ -297,11 +297,11 @@ impl Schedule {
         next_instant(now_nanos, &next)
     }
 
-    /// Returns [`CronWaiter`] which implements [`Future`](). It becomes asleep until next upcoming event happened.
+    /// Returns [`CronSleep`] which implements [`Future`](). It becomes asleep until next upcoming event happened.
     pub fn sleep<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<CronSleep> {
         let until = self.upcoming_instant(current)?;
-        let waiter = CronSleep::new(until);
-        Some(waiter)
+        let sleep = CronSleep::new(until);
+        Some(sleep)
     }
 
     /// q
@@ -327,7 +327,7 @@ mod tests {
     use chrono::Utc;
     #[cfg(feature = "tz")]
     use chrono_tz::Europe::Kyiv;
-    use futures::StreamExt;
+    use futures::{select, StreamExt};
     use rstest::rstest;
 
     const ACCEPTED_SLEEP_DRIFT: Duration = Duration::from_millis(2);
@@ -350,6 +350,7 @@ mod tests {
     #[rstest]
     #[case("*/2 * * * * * 2024", "2025-01-01T00:00:00.001Z")]
     #[case("* * * 29 2 * 2025", "2024-12-31T23:59:59Z")]
+    #[timeout(Duration::from_secs(3))]
     fn test_upcoming_instant_unschedulable(#[case] schedule: &str, #[case] current: &str) {
         let current = DateTime::parse_from_rfc3339(current).unwrap();
         let schedule = Schedule::try_from(schedule).unwrap();
@@ -357,7 +358,8 @@ mod tests {
         assert!(instant.is_none(), "instant={instant:?}");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
     fn test_next_instant_unschedulable() {
         let now = (Utc::now() + Duration::from_secs(10)).timestamp_nanos_opt().unwrap();
         let next = Utc::now();
@@ -370,6 +372,7 @@ mod tests {
     #[case("*/15 * * * * *", "2024-12-31T23:59:59Z", Duration::from_millis(1000))]
     #[case("*/15 * * * * *", "2024-12-31T23:59:45.001Z", Duration::from_millis(14999))]
     #[case("1 5 * * *", "2024-01-01T23:59:59.999+05:00", Duration::from_secs(5*3600+60)+Duration::from_millis(1))]
+    #[timeout(Duration::from_secs(3))]
     fn test_upcoming_instant_without_tz(
         #[case] schedule: &str,
         #[case] current: &str,
@@ -397,6 +400,7 @@ mod tests {
     #[case("TZ=Europe/Kyiv 1 5 * * *", "2025-03-30T02:59:59.999Z", Duration::from_secs(23*60*60 /*hours*/ + 60 /*minutes*/) + Duration::from_millis(1))]
     #[case("TZ=Europe/Kyiv 1 5 * * *", "2025-03-30T02:59:59.999+02:00", Duration::from_secs(60*60 /*hours*/ + 60 /*minutes*/) + Duration::from_millis(1))]
     #[case("TZ=Europe/Kyiv 1 3 * * *", "2025-03-30T02:59:59.999+02:00", Duration::from_secs(23*60*60 /*hours*/ + 60 /*minutes*/) + Duration::from_millis(1))]
+    #[timeout(Duration::from_secs(3))]
     fn test_upcoming_instant_with_schedule_tz(
         #[case] schedule: &str,
         #[case] current: &str,
@@ -414,6 +418,7 @@ mod tests {
     #[case("TZ=Europe/Kyiv 1 5 * * *", Kyiv.with_ymd_and_hms(2025, 1, 1, 2, 59, 59).unwrap(), Duration::from_secs(2*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
     #[case("TZ=UTC 1 5 * * *", Kyiv.with_ymd_and_hms(2025, 1, 1, 2, 59, 59).unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
     #[case("TZ=Europe/Paris 1 5 * * *", Kyiv.with_ymd_and_hms(2025, 1, 1, 2, 59, 59).unwrap(), Duration::from_secs(3*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[timeout(Duration::from_secs(3))]
     fn test_upcoming_instant_with_both_tz<T: TimeZone>(
         #[case] schedule: &str,
         #[case] current: DateTime<T>,
@@ -423,6 +428,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
     async fn test_sleep_ok() {
         let schedule = Schedule::try_from("*/2 * * * * *").unwrap();
         let now = Utc::now();
@@ -431,15 +438,19 @@ mod tests {
     }
 
     #[tokio::test]
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
     async fn test_sleep_missed() {
         let schedule = Schedule::try_from("*/2 * * * * *").unwrap();
         let now = Utc::now();
-        let waiter = schedule.sleep(&now).unwrap();
+        let sleep = schedule.sleep(&now).unwrap();
         tokio::time::sleep(Duration::from_millis(2100)).await;
-        assert_eq!(waiter.await, CronEvent::Missed);
+        assert_eq!(sleep.await, CronEvent::Missed);
     }
 
     #[tokio::test]
+    #[rstest]
+    #[timeout(Duration::from_secs(8))]
     async fn test_stream_with_order() {
         const INTERVAL: Duration = Duration::from_millis(2000);
 
@@ -468,7 +479,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stream_with_dilayed() {
+    #[rstest]
+    #[timeout(Duration::from_secs(10))]
+    async fn test_stream_with_delays() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
         let now = Utc::now();
         let mut stream = schedule.into_stream(&now);
@@ -486,6 +499,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
     async fn test_stream_finish() {
         let schedule = Schedule::try_from("0 0 0 1 1 * 2024").unwrap();
         let now = Utc.with_ymd_and_hms(2023, 12, 31, 23, 23, 23).unwrap();
@@ -493,5 +508,59 @@ mod tests {
 
         assert_eq!(stream.next().await, Some(CronEvent::Missed));
         assert_eq!(stream.next().await, None);
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
+    async fn test_sleep_is_terminated() {
+        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        let now = Utc::now();
+        let mut test_sleep = schedule.sleep(&now).unwrap();
+        assert!(!test_sleep.is_terminated());
+
+        select! {
+            _ = test_sleep => {
+                assert_eq!(test_sleep.state, FutureState::Completed);
+                assert!(test_sleep.is_terminated())
+            },
+            _ = futures::future::pending::<()>() => {
+                unreachable!()
+            },
+        }
+
+        assert!(test_sleep.is_terminated());
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
+    async fn test_streem_is_terminated() {
+        let schedule = Schedule::try_from("0 0 0 1 1 * 2024").unwrap();
+        let now = Utc.with_ymd_and_hms(2023, 12, 31, 23, 23, 23).unwrap();
+        let mut test_stream = schedule.stream(&now);
+        assert!(!test_stream.is_terminated());
+
+        assert_eq!(test_stream.next().await, Some(CronEvent::Missed));
+        assert!(!test_stream.is_terminated());
+
+        assert_eq!(test_stream.next().await, None);
+        assert!(test_stream.is_terminated());
+
+        assert_eq!(test_stream.next().await, None);
+        assert!(test_stream.is_terminated());
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[timeout(Duration::from_secs(7))]
+    async fn test_streem_take() {
+        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        let now = Utc::now();
+
+        let test_stream = schedule.stream(&now).skip(1).take(5).collect::<Vec<_>>().await;
+
+        assert_eq!(test_stream.len(), 5);
+        assert!(test_stream.iter().all(|e| e == &CronEvent::Ok))
     }
 }

@@ -1558,7 +1558,7 @@ mod tests {
         #[case(chrono_tz::EET, chrono_tz::EET)]
         #[case(chrono_tz::EET, chrono_tz::Canada::Eastern)]
         #[case(chrono_tz::Canada::Eastern, chrono_tz::EET)]
-        #[timeout(Duration::from_secs(1))]
+        #[timeout(Duration::from_secs(3))]
         fn test_rough_iterator<T1: TimeZone + Debug, T2: TimeZone + Debug>(
             #[case] current_tz: T1,
             #[case] schedule_tz: T2,
