@@ -21,7 +21,7 @@ type ControlChannel = Sender<ControlCmd>;
 
 static KEY_SERIAL: AtomicU16 = AtomicU16::new(0);
 
-/// Represents a kind of the async cron event returned by [`CronWaiter`].
+/// Represents a kind of the async cron event returned by [`CronWaiter`] or stream.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CronEvent {
     /// Event happened in time.
@@ -161,12 +161,14 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
     type Item = CronEvent;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let now_nanos = Utc::now().timestamp_nanos_opt().unwrap();
+        let now_inst = Instant::now();
         match self.state {
             StreamState::Idle => {
                 // No active events in queue
                 // Try to push next one
                 if let Some(next) = self.iter.next() {
-                    if let Some(until) = next_instant(Utc::now().timestamp_nanos_opt().unwrap(), &next) {
+                    if let Some(until) = next_instant(now_nanos, &next) {
                         // Got valid event, push it to the waiter thread
                         let key = WaiterKey {
                             until,
@@ -189,7 +191,7 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
                 }
             }
             StreamState::Waiting(key) => {
-                if key.until > Instant::now() {
+                if key.until > now_inst {
                     // Still waiting, so refresh waker
                     self.send_cmd(ControlCmd::Insert {
                         key,
@@ -318,7 +320,8 @@ mod tests {
     use futures::StreamExt;
     use rstest::rstest;
 
-    const ACCEPTED_DRIFT: Duration = Duration::from_millis(2);
+    const ACCEPTED_WAITER_DRIFT: Duration = Duration::from_millis(2);
+    const ACCEPTED_STREAM_DRIFT: Duration = Duration::from_millis(5);
 
     fn test_upcoming_instant_case<T: TimeZone>(schedule: &str, current: DateTime<T>, expected_delta: Duration) {
         let schedule = Schedule::try_from(schedule).unwrap();
@@ -329,7 +332,7 @@ mod tests {
             "sleeps too long: delta={delta:?}, expected={expected_delta:?}"
         );
         assert!(
-            delta >= expected_delta - ACCEPTED_DRIFT,
+            delta >= expected_delta - ACCEPTED_WAITER_DRIFT,
             "drift is out of range: delta={delta:?}, expected={expected_delta:?}"
         );
     }
@@ -428,12 +431,57 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_with_order() {
-        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        const INTERVAL: Duration = Duration::from_millis(2000);
+
+        let schedule = Schedule::try_from("*/2 * * * * *").unwrap();
         let now = Utc::now();
         let mut stream = schedule.stream(&now);
 
+        stream.next().await;
+        let next = stream.next().await;
+        let start = Instant::now();
+        assert_eq!(next, Some(CronEvent::Ok));
+
+        tokio::time::sleep(INTERVAL - Duration::from_millis(50)).await;
+        let next = stream.next().await;
+        let elapsed = start.elapsed();
+        assert_eq!(next, Some(CronEvent::Ok));
+
+        assert!(
+            elapsed <= INTERVAL + ACCEPTED_STREAM_DRIFT,
+            "sleeps too long: elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed >= INTERVAL - ACCEPTED_STREAM_DRIFT,
+            "drift is out of range: elapsed={elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_dilayed() {
+        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        let now = Utc::now();
+        let mut stream = schedule.into_stream(&now);
+
+        stream.next().await;
+        tokio::time::sleep(Duration::from_millis(5500)).await;
+        let mut missed = 0;
+
+        while let Some(CronEvent::Missed) = stream.next().await {
+            missed += 1;
+        }
+
+        assert_eq!(missed, 5);
         assert_eq!(stream.next().await, Some(CronEvent::Ok));
-        assert_eq!(stream.next().await, Some(CronEvent::Ok));
-        assert_eq!(stream.next().await, Some(CronEvent::Ok));
+    }
+
+    #[tokio::test]
+    async fn test_stream_finish() {
+        let schedule = Schedule::try_from("0 0 0 1 1 * 2024").unwrap();
+        let now = Utc.with_ymd_and_hms(2023, 12, 31, 23, 23, 23).unwrap();
+        let mut stream = schedule.stream(&now);
+
+        assert_eq!(stream.next().await, Some(CronEvent::Missed));
+        assert_eq!(stream.next().await, None);
     }
 }

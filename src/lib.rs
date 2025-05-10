@@ -105,13 +105,13 @@
 //! * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [`Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for [`Schedule`].
 //! * `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
 
-/// Primitives related to async cron events generation.
 #[cfg(feature = "async")]
+/// Asynchronous scheduled events generation.
 pub mod asyncronous;
 /// Crate specific Error implementation.
 pub mod error;
 mod pattern;
-/// Cron schedule pattern parser and upcoming event generator.
+/// Cron schedule pattern parser and upcoming events generator.
 pub mod schedule;
 mod series;
 mod utils;
@@ -119,6 +119,8 @@ mod utils;
 // Re-export of public entities.
 #[cfg(feature = "async")]
 pub use asyncronous::CronEvent;
+#[cfg(feature = "async")]
+pub use asyncronous::CronStream;
 #[cfg(feature = "async")]
 pub use asyncronous::CronWaiter;
 
