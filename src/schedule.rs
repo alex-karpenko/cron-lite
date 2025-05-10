@@ -279,9 +279,9 @@ impl Schedule {
 
 /// Contains iterator state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ScheduleIterator<Tz: TimeZone> {
-    schedule: Schedule,
-    next: Option<DateTime<Tz>>,
+pub(crate) struct ScheduleIterator<Tz: TimeZone> {
+    pub(crate) schedule: Schedule,
+    pub(crate) next: Option<DateTime<Tz>>,
 }
 
 impl<Tz: TimeZone> Iterator for ScheduleIterator<Tz> {
