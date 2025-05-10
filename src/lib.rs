@@ -120,9 +120,9 @@ mod utils;
 #[cfg(feature = "async")]
 pub use asyncronous::CronEvent;
 #[cfg(feature = "async")]
-pub use asyncronous::CronStream;
+pub use asyncronous::CronSleep;
 #[cfg(feature = "async")]
-pub use asyncronous::CronWaiter;
+pub use asyncronous::CronStream;
 
 pub use error::CronError;
 pub use schedule::Schedule;
