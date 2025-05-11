@@ -731,7 +731,8 @@ mod tests {
         assert!(test_stream.iter().all(|e| e == &CronEvent::Ok))
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_stream_set_with_skip_missed() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
         let stream = schedule.stream(&Utc::now());
@@ -742,7 +743,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stream_with_skip_missed() {
+    #[rstest]
+    #[timeout(Duration::from_secs(7))]
+    async fn test_stream_with_skip_missed_without_finish() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
         let test_stream = schedule.stream(&Utc::now()).with_skip_missed(true).take(2);
 
@@ -750,5 +753,17 @@ mod tests {
         let result = test_stream.collect::<Vec<_>>().await;
         assert!(result.iter().all(|e| e == &CronEvent::Ok));
         assert_eq!(result.len(), 2);
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    async fn test_stream_with_skip_missed_finished() {
+        let schedule = Schedule::try_from("0 0 0 1 1 * 2024").unwrap();
+        let now = Utc.with_ymd_and_hms(2023, 12, 31, 23, 23, 23).unwrap();
+        let test_stream = schedule.stream(&now).with_skip_missed(true).take(2);
+
+        let result = test_stream.collect::<Vec<_>>().await;
+        assert!(result.is_empty());
     }
 }
