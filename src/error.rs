@@ -28,21 +28,21 @@ impl Error for CronError {}
 impl Display for CronError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CronError::InvalidCronSchedule(schedule) => write!(f, "invalid cron schedule: {}", schedule),
+            CronError::InvalidCronSchedule(schedule) => write!(f, "invalid cron schedule: {schedule}"),
             CronError::InvalidDaysPattern(pattern) => {
                 write!(f, "invalid patterns of days of month or/and week: {pattern}")
             }
-            CronError::InvalidCronPattern(pattern, type_) => write!(f, "{type_}: invalid cron pattern: {}", pattern),
-            CronError::InvalidDigitalValue(value, type_) => write!(f, "{type_}: invalid digital value: {}", value),
-            CronError::InvalidMnemonicValue(value, type_) => write!(f, "{type_}: invalid mnemonic value: {}", value),
+            CronError::InvalidCronPattern(pattern, type_) => write!(f, "{type_}: invalid cron pattern: {pattern}"),
+            CronError::InvalidDigitalValue(value, type_) => write!(f, "{type_}: invalid digital value: {value}"),
+            CronError::InvalidMnemonicValue(value, type_) => write!(f, "{type_}: invalid mnemonic value: {value}"),
             CronError::InvalidDayOfWeekValue(value, type_) => {
-                write!(f, "{type_}: invalid day of week value: {}", value)
+                write!(f, "{type_}: invalid day of week value: {value}")
             }
-            CronError::InvalidRangeValue(value, type_) => write!(f, "{type_}: invalid range pattern: {}", value),
+            CronError::InvalidRangeValue(value, type_) => write!(f, "{type_}: invalid range pattern: {value}"),
             CronError::InvalidRepeatingPattern(pattern, type_) => {
-                write!(f, "{type_}: invalid repeating pattern: {}", pattern)
+                write!(f, "{type_}: invalid repeating pattern: {pattern}")
             }
-            CronError::InvalidTimeZone(tz) => write!(f, "invalid time zone: {}", tz),
+            CronError::InvalidTimeZone(tz) => write!(f, "invalid time zone: {tz}"),
         }
     }
 }

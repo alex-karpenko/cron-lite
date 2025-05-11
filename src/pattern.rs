@@ -451,20 +451,20 @@ impl Display for PatternItem {
         match self {
             PatternItem::All => write!(f, "*"),
             PatternItem::Any => write!(f, "?"),
-            PatternItem::LastDow(dow) => write!(f, "{}L", dow),
+            PatternItem::LastDow(dow) => write!(f, "{dow}L"),
             PatternItem::LastDom => write!(f, "L"),
-            PatternItem::Weekday(dom) => write!(f, "{}W", dom),
-            PatternItem::RepeatingValue(value, repeater) => write!(f, "{}/{}", value, repeater),
+            PatternItem::Weekday(dom) => write!(f, "{dom}W"),
+            PatternItem::RepeatingValue(value, repeater) => write!(f, "{value}/{repeater}"),
             PatternItem::RepeatingRange(start, end, repeater) => {
-                write!(f, "{}-{}/{}", start, end, repeater)
+                write!(f, "{start}-{end}/{repeater}")
             }
-            PatternItem::Range(start, end) => write!(f, "{}-{}", start, end),
-            PatternItem::Particular(value) => write!(f, "{}", value),
+            PatternItem::Range(start, end) => write!(f, "{start}-{end}"),
+            PatternItem::Particular(value) => write!(f, "{value}"),
             PatternItem::List(vec) => {
                 let values = vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-                write!(f, "{}", values)
+                write!(f, "{values}")
             }
-            PatternItem::Hash(dow, number) => write!(f, "{}#{}", dow, number),
+            PatternItem::Hash(dow, number) => write!(f, "{dow}#{number}"),
         }
     }
 }

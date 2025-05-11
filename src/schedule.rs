@@ -1569,13 +1569,13 @@ mod tests {
 
             let current = current_tz.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap();
 
-            let tz_str = format!("{:?}", schedule_tz).to_uppercase();
+            let tz_str = format!("{schedule_tz:?}").to_uppercase();
             let tz = if tz_str == "LOCAL" {
                 None
             } else if tz_str == "Z" || tz_str == "UTC" {
                 Some(String::from("UTC"))
             } else {
-                Some(format!("{:?}", schedule_tz))
+                Some(format!("{schedule_tz:?}"))
             };
 
             let schedule = if let Some(tz) = tz {
