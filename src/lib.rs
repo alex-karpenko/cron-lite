@@ -3,7 +3,7 @@
 
 //! This is a tiny crate, intended to:
 //! - parse almost all kinds of popular cron schedule formats;
-//! - generate series of timestamps according to the schedule.
+//! - generates a series of timestamps according to the schedule.
 //!
 //! It has a single external dependency - [chrono](https://crates.io/crates/chrono).
 //!
@@ -13,7 +13,7 @@
 //!
 //! ## Cron schedule format
 //!
-//! Traditionally, cron schedule expression has a 5-fields format: minutes, hours, days, months and days of week.
+//! Traditionally, cron schedule expression has a 5-field format: minutes, hours, days, months, and days of the week.
 //! This crate uses such a format by default, but two optional fields may be added, seconds and years:
 //! - if _seconds_ is empty, `0` is used by default;
 //! - if _years_ is empty, `*` is used by default;
@@ -60,10 +60,12 @@
 //!
 //! ## How to use
 //!
-//! The single public entity of the crate is a [`Schedule`] structure, which has three basic methods:
+//! The single public entity of the crate is a [`Schedule`] structure, which has several basic methods:
 //! - [new()](Schedule::new): constructor to parse and validate provided schedule;
 //! - [upcoming()](Schedule::upcoming): returns time of the next schedule's event, starting from the provided timestamp;
-//! - [iter()](Schedule::iter): returns an `Iterator` which produces a series of timestamps according to the schedule.
+//! - [iter()](Schedule::iter): returns an `Iterator` which produces a series of timestamps according to the schedule;
+//! - [sleep()](Schedule::sleep): falls asleep until time of the upcoming schedule's event (`async` feature only);
+//! - [stream()](Schedule::stream): construct `Stream` which asynchronously generates events right in scheduled time (`async` feature only).
 //!
 //! ### Example with `upcoming`
 //! ```rust
@@ -101,13 +103,35 @@
 //! }
 //! ```
 //!
+//! ### Example with `stream`
+//! ```rust
+//! use chrono::Local;
+//! use cron_lite::{CronEvent, Result, Schedule};
+//! use futures::stream::StreamExt;
+//!
+//! async fn stream() -> Result<()> {
+//!     let schedule = Schedule::new("*/15 * * * * *")?;
+//!     let now = Local::now();
+//!
+//!     // Wake up every 15 seconds 10 times starting from now but skip the first event.
+//!     let mut s = schedule.stream(&now).skip(1).take(10);
+//!     while let Some(event) = s.next().await {
+//!         assert_eq!(event, CronEvent::Ok);
+//!         println!("next: {event:?}");
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
 //! # Feature flags
 //! * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [`Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for [`Schedule`].
 //! * `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
+//! * `async`: adds several methods to use in async environments. See documentation for details.
 
 #[cfg(feature = "async")]
-/// Asynchronous scheduled events generation.
-pub mod asyncronous;
+/// Provides several additional methods to [`Schedule`] to use in asynchronous code with any runtime.
+pub mod asynchronous;
 /// Crate specific Error implementation.
 pub mod error;
 mod pattern;
@@ -118,11 +142,11 @@ mod utils;
 
 // Re-export of public entities.
 #[cfg(feature = "async")]
-pub use asyncronous::CronEvent;
+pub use asynchronous::CronEvent;
 #[cfg(feature = "async")]
-pub use asyncronous::CronSleep;
+pub use asynchronous::CronSleep;
 #[cfg(feature = "async")]
-pub use asyncronous::CronStream;
+pub use asynchronous::CronStream;
 
 pub use error::CronError;
 pub use schedule::Schedule;
