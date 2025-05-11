@@ -202,6 +202,9 @@ impl Drop for CronSleep {
 /// than an interval of the scheduled events, it returns [`CronEvent::Missed`];
 /// that means the scheduled event happened in the past.
 ///
+/// You can config stream to skip missed events using [`CronStream::with_skip_missed()`] method.
+/// Default config is to return all kinds of events.
+///
 /// May panic if the background thread (which controls all sleep and stream events) fails.
 ///
 /// Be aware that the precision of the time when events happen is not perfect
@@ -239,6 +242,7 @@ pub struct CronStream<Tz: TimeZone> {
     state: FutureState,
     iter: ScheduleIterator<Tz>,
     tx: ControlChannel,
+    skip_missed: bool,
 }
 
 impl<Tz: TimeZone> CronStream<Tz> {
@@ -248,12 +252,56 @@ impl<Tz: TimeZone> CronStream<Tz> {
             state: FutureState::Idle,
             tx: sleep_thread_tx().clone(),
             iter,
+            skip_missed: false,
         }
     }
 
     #[inline]
     fn send_cmd(&self, cmd: ControlCmd) {
         self.tx.send(cmd).expect("sleep control channel is closed");
+    }
+
+    /// Defines how to process missed events in the stream:
+    /// - `false`: pass all events to the consumer, both valid and missed (default setup);
+    /// - `true`: skip missed events and pass valid events only to the consumer.
+    ///
+    /// Returns modified instance of the [`CronStream`].
+    ///
+    /// # Examples
+    /// ```rust
+    /// use chrono::Local;
+    /// use cron_lite::{CronEvent, Schedule, Result};
+    /// use futures::stream::StreamExt;
+    /// use std::time::{Duration, Instant};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let schedule = Schedule::new("*/2 * * * * *")?;
+    ///
+    ///     // Create a stream of three events starting from the 2nd one.
+    ///     let mut stream = schedule.into_stream(&Local::now()).with_skip_missed(true).take(3);
+    ///
+    ///     let start = Instant::now();
+    ///     tokio::time::sleep(Duration::from_secs(5)).await;
+    ///
+    ///     while let Some(event) = stream.next().await {
+    ///         assert_eq!(event, CronEvent::Ok);
+    ///         println!("Elapsed: {:?}", start.elapsed());
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
+    pub fn with_skip_missed(mut self, skip_missed: bool) -> Self {
+        self.skip_missed = skip_missed;
+        self
+    }
+
+    /// Returns current value of the `skip_missed` config option.
+    #[inline]
+    pub fn skip_missed(&self) -> bool {
+        self.skip_missed
     }
 }
 
@@ -267,25 +315,31 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
             FutureState::Idle => {
                 // No active events in the queue
                 // Try to push the next one
-                if let Some(next) = self.iter.next() {
-                    // And if we have a next event
-                    if let Some(until) = next_instant(now_nanos, &next) {
-                        // And it's not a past (missed) event, then push it to the sleep thread
-                        let key = SleepQueueKey::new(until);
-                        self.send_cmd(ControlCmd::Insert {
-                            key,
-                            waker: cx.waker().clone(),
-                        });
-                        self.state = FutureState::Waiting(key);
-                        Poll::Pending
+                loop {
+                    if let Some(next) = self.iter.next() {
+                        // And if we have a next event
+                        if let Some(until) = next_instant(now_nanos, &next) {
+                            // And it's not a past (missed) event, then push it to the sleep thread
+                            let key = SleepQueueKey::new(until);
+                            self.send_cmd(ControlCmd::Insert {
+                                key,
+                                waker: cx.waker().clone(),
+                            });
+                            self.state = FutureState::Waiting(key);
+                            return Poll::Pending;
+                        } else {
+                            // We got an event, but it's already in the past
+                            if self.skip_missed {
+                                continue;
+                            } else {
+                                return Poll::Ready(Some(CronEvent::Missed));
+                            }
+                        }
                     } else {
-                        // We got an event, but it's already in the past
-                        Poll::Ready(Some(CronEvent::Missed))
+                        // The iterator is gone, so we finish the stream
+                        self.state = FutureState::Completed;
+                        return Poll::Ready(None);
                     }
-                } else {
-                    // The iterator is gone, so we finish the stream
-                    self.state = FutureState::Completed;
-                    Poll::Ready(None)
                 }
             }
             FutureState::Waiting(key) => {
@@ -675,5 +729,26 @@ mod tests {
 
         assert_eq!(test_stream.len(), 5);
         assert!(test_stream.iter().all(|e| e == &CronEvent::Ok))
+    }
+
+    #[test]
+    fn test_stream_set_with_skip_missed() {
+        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        let stream = schedule.stream(&Utc::now());
+
+        assert!(!stream.skip_missed());
+        let stream = stream.with_skip_missed(true);
+        assert!(stream.skip_missed());
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_skip_missed() {
+        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        let test_stream = schedule.stream(&Utc::now()).with_skip_missed(true).take(2);
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let result = test_stream.collect::<Vec<_>>().await;
+        assert!(result.iter().all(|e| e == &CronEvent::Ok));
+        assert_eq!(result.len(), 2);
     }
 }
