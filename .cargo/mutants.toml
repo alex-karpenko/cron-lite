@@ -4,6 +4,6 @@ cap_lints = true
 exclude_re = [
     "src/schedule.rs:123:9: replace Schedule::upcoming -> Option<DateTime<T>> with .*",
     "src/asynchronous.rs:188:9: replace <impl Drop for CronSleep>::drop with \\(\\)",
-    "src/asynchronous.rs:292:30: replace > with == in <impl Stream for CronStream<Tz>>::poll_next",
-    "src/asynchronous.rs:324:9: replace <impl PinnedDrop for CronStream<Tz>>::drop with \\(\\)",
+    "src/asynchronous.rs:346:30: replace > with == in <impl Stream for CronStream<Tz>>::poll_next",
+    "src/asynchronous.rs:378:9: replace <impl PinnedDrop for CronStream<Tz>>::drop with \\(\\)",
 ]
