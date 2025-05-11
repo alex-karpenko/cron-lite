@@ -3,7 +3,7 @@ additional_cargo_args = ["--all-features"]
 cap_lints = true
 exclude_re = [
     "src/schedule.rs:123:9: replace Schedule::upcoming -> Option<DateTime<T>> with .*",
-    "src/asyncronous.rs:185:9: replace <impl Drop for CronSleep>::drop with \\(\\)",
-    "src/asyncronous.rs:292:30: replace > with == in <impl Stream for CronStream<Tz>>::poll_next",
-    "src/asyncronous.rs:322:9: replace <impl PinnedDrop for CronStream<Tz>>::drop with \\(\\)",
+    "src/asynchronous.rs:188:9: replace <impl Drop for CronSleep>::drop with \\(\\)",
+    "src/asynchronous.rs:292:30: replace > with == in <impl Stream for CronStream<Tz>>::poll_next",
+    "src/asynchronous.rs:324:9: replace <impl PinnedDrop for CronStream<Tz>>::drop with \\(\\)",
 ]
