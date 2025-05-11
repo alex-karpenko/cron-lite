@@ -105,6 +105,8 @@
 //!
 //! ### Example with `stream`
 //! ```rust
+//! # #[cfg(feature = "async")]
+//! # mod wrapper {
 //! use chrono::Local;
 //! use cron_lite::{CronEvent, Result, Schedule};
 //! use futures::stream::StreamExt;
@@ -122,6 +124,7 @@
 //!
 //!     Ok(())
 //! }
+//! # }
 //! ```
 //!
 //! # Feature flags
