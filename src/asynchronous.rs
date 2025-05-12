@@ -115,7 +115,7 @@ impl CronSleep {
             until,
             tx: sleep_thread_tx().clone(),
             state: FutureState::Idle,
-            returned: Some(CronEvent::Ok),
+            returned: None,
         }
     }
 
