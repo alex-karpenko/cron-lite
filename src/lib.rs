@@ -118,7 +118,7 @@
 //!     // Wake up every 15 seconds 10 times starting from now but skip the first event.
 //!     let mut s = schedule.stream(&now).skip(1).take(10);
 //!     while let Some(event) = s.next().await {
-//!         assert_eq!(event, CronEvent::Ok);
+//!         assert!(matches!(event, CronEvent::Ok(_)));
 //!         println!("next: {event:?}");
 //!     }
 //!

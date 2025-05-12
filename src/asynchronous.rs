@@ -19,23 +19,23 @@ use std::{
 type Serial = u16;
 type ControlChannel = Sender<ControlCmd>;
 
-/// Represents a kind (character) of the async cron event returned by [`CronSleep`] or [`CronStream`].
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
-pub enum CronEvent {
+/// Represents a kind (character) and time of the async cron event returned by [`CronSleep`] or [`CronStream`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CronEvent<Tz: TimeZone> {
     /// The event happened in time.
-    Ok,
+    Ok(DateTime<Tz>),
     /// The event was missed and happened after it's scheduled time.
-    Missed,
+    Missed(DateTime<Tz>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum FutureState {
     Idle,
     Waiting(SleepQueueKey),
     Completed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct SleepQueueKey {
     until: Instant,
     serial: Serial,
@@ -63,7 +63,7 @@ enum ControlCmd {
 /// which sleeps until the upcoming scheduled event.
 ///
 /// When awaited, it returns an instance of the [`CronEvent`],
-/// which represents a kind of the happened event - in time or missed.
+/// which represents a kind and time of the happened event.
 ///
 /// May panic if the background thread (which controls all sleep and stream events) fails.
 ///
@@ -89,30 +89,33 @@ enum ControlCmd {
 ///
 ///     // But the next one happens definitely in time
 ///     let sleep = schedule.sleep(&Local::now()).unwrap();
-///     assert_eq!(sleep.await, CronEvent::Ok);
+///     assert!(matches!(sleep.await, CronEvent::Ok(_)));
 ///
 ///     // In case we spent too much time between creating and awaiting
 ///     // of the CronSleep instance, we can "oversleep" scheduled event and
 ///     // get "Missed" one.
 ///     let sleep = schedule.sleep(&Utc::now()).unwrap();
 ///     tokio::time::sleep(Duration::from_secs(3)).await;
-///     assert_eq!(sleep.await, CronEvent::Missed);
+///     assert!(matches!(sleep.await, CronEvent::Missed(_)));
 ///
 ///     Ok(())
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct CronSleep {
+#[pin_project(PinnedDrop)]
+pub struct CronSleep<Tz: TimeZone> {
     until: Instant,
+    next: DateTime<Tz>,
     tx: ControlChannel,
     state: FutureState,
-    returned: Option<CronEvent>,
+    returned: Option<CronEvent<Tz>>,
 }
 
-impl CronSleep {
-    fn new(until: Instant) -> Self {
+impl<Tz: TimeZone> CronSleep<Tz> {
+    fn new(until: Instant, next: DateTime<Tz>) -> Self {
         Self {
             until,
+            next,
             tx: sleep_thread_tx().clone(),
             state: FutureState::Idle,
             returned: None,
@@ -125,30 +128,34 @@ impl CronSleep {
     }
 
     #[inline]
-    fn finish(&mut self, event: CronEvent) -> Poll<CronEvent> {
+    fn finish(&mut self, event: CronEvent<Tz>) -> Poll<CronEvent<Tz>> {
         self.state = FutureState::Completed;
-        self.returned = Some(event);
+        self.returned = Some(event.clone());
 
         Poll::Ready(event)
     }
 }
 
-impl Future for CronSleep {
-    type Output = CronEvent;
+impl<Tz: TimeZone> Future for CronSleep<Tz> {
+    type Output = CronEvent<Tz>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let now_inst = Instant::now();
-        match self.state {
+        let next = self.next.clone();
+        match &self.state {
             FutureState::Idle => {
                 // It wasn't started yet
                 if now_inst >= self.until {
                     // But it's already missed
-                    self.finish(CronEvent::Missed)
+                    self.finish(CronEvent::Missed(next))
                 } else {
                     // If not missed - push it to the sleep thread
                     let waker = cx.waker().clone();
                     let key = SleepQueueKey::new(self.until);
-                    self.send_cmd(ControlCmd::Insert { key, waker });
+                    self.send_cmd(ControlCmd::Insert {
+                        key: key.clone(),
+                        waker,
+                    });
                     self.state = FutureState::Waiting(key);
                     Poll::Pending
                 }
@@ -157,12 +164,12 @@ impl Future for CronSleep {
                 // Already running in the sleep thread
                 if now_inst >= self.until {
                     // And finished in time
-                    self.send_cmd(ControlCmd::Remove { key });
-                    self.finish(CronEvent::Ok)
+                    self.send_cmd(ControlCmd::Remove { key: key.clone() });
+                    self.finish(CronEvent::Ok(next))
                 } else {
                     // Or not finished yet, so refresh the Waker instance in the sleep thread
                     self.send_cmd(ControlCmd::Insert {
-                        key,
+                        key: key.clone(),
                         waker: cx.waker().clone(),
                     });
                     Poll::Pending
@@ -170,25 +177,29 @@ impl Future for CronSleep {
             }
             // Theoretically, this branch is unreachable if you use a valid async runtime,
             // but to protect form invalid ones, we return the last actual returned value.
-            FutureState::Completed => Poll::Ready(self.returned.expect("unexpected call to poll, looks like a BUG!")),
+            FutureState::Completed => Poll::Ready(
+                self.returned
+                    .clone()
+                    .expect("unexpected call to poll, looks like a BUG!"),
+            ),
         }
     }
 }
 
-impl FusedFuture for CronSleep {
+impl<Tz: TimeZone> FusedFuture for CronSleep<Tz> {
     #[inline]
     fn is_terminated(&self) -> bool {
         self.state == FutureState::Completed
     }
 }
 
-impl Drop for CronSleep {
+#[pinned_drop]
+impl<Tz: TimeZone> PinnedDrop for CronSleep<Tz> {
     #[inline]
-    fn drop(&mut self) {
-        if let FutureState::Waiting(key) = self.state {
-            self.send_cmd(ControlCmd::Remove { key });
+    fn drop(self: Pin<&mut Self>) {
+        if let FutureState::Waiting(key) = &self.state {
+            self.send_cmd(ControlCmd::Remove { key: key.clone() });
         }
-        self.state = FutureState::Completed;
     }
 }
 
@@ -229,8 +240,8 @@ impl Drop for CronSleep {
 ///     let start = Instant::now();
 ///
 ///     while let Some(event) = stream.next().await {
-///         assert_eq!(event, CronEvent::Ok);
-///         println!("Elapsed: {:?}", start.elapsed());
+///         assert!(matches!(event, CronEvent::Ok(_)));
+///         println!("Event: {event:?}, elapsed: {:?}", start.elapsed());
 ///     }
 ///
 ///     Ok(())
@@ -243,6 +254,7 @@ pub struct CronStream<Tz: TimeZone> {
     iter: ScheduleIterator<Tz>,
     tx: ControlChannel,
     skip_missed: bool,
+    next: Option<DateTime<Tz>>,
 }
 
 impl<Tz: TimeZone> CronStream<Tz> {
@@ -253,6 +265,7 @@ impl<Tz: TimeZone> CronStream<Tz> {
             tx: sleep_thread_tx().clone(),
             iter,
             skip_missed: false,
+            next: None,
         }
     }
 
@@ -285,8 +298,8 @@ impl<Tz: TimeZone> CronStream<Tz> {
     ///     tokio::time::sleep(Duration::from_secs(5)).await;
     ///
     ///     while let Some(event) = stream.next().await {
-    ///         assert_eq!(event, CronEvent::Ok);
-    ///         println!("Elapsed: {:?}", start.elapsed());
+    ///         assert!(matches!(event, CronEvent::Ok(_)));
+    ///         println!("Event: {event:?}, elapsed: {:?}", start.elapsed());
     ///     }
     ///
     ///     Ok(())
@@ -306,12 +319,12 @@ impl<Tz: TimeZone> CronStream<Tz> {
 }
 
 impl<Tz: TimeZone> Stream for CronStream<Tz> {
-    type Item = CronEvent;
+    type Item = CronEvent<Tz>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let now_nanos = Utc::now().timestamp_nanos_opt().unwrap();
         let now_inst = Instant::now();
-        match self.state {
+        match &self.state {
             FutureState::Idle => {
                 // No active events in the queue
                 // Try to push the next one
@@ -322,17 +335,18 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
                             // And it's not a past (missed) event, then push it to the sleep thread
                             let key = SleepQueueKey::new(until);
                             self.send_cmd(ControlCmd::Insert {
-                                key,
+                                key: key.clone(),
                                 waker: cx.waker().clone(),
                             });
                             self.state = FutureState::Waiting(key);
+                            self.next = Some(next);
                             return Poll::Pending;
                         } else {
                             // We got an event, but it's already in the past
                             if self.skip_missed {
                                 continue;
                             } else {
-                                return Poll::Ready(Some(CronEvent::Missed));
+                                return Poll::Ready(Some(CronEvent::Missed(next)));
                             }
                         }
                     } else {
@@ -346,15 +360,15 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
                 if key.until > now_inst {
                     // Still waiting, so refresh Waker
                     self.send_cmd(ControlCmd::Insert {
-                        key,
+                        key: key.clone(),
                         waker: cx.waker().clone(),
                     });
                     Poll::Pending
                 } else {
                     // The expected time of this particular event was arrived
-                    self.send_cmd(ControlCmd::Remove { key });
+                    self.send_cmd(ControlCmd::Remove { key: key.clone() });
                     self.state = FutureState::Idle;
-                    Poll::Ready(Some(CronEvent::Ok))
+                    Poll::Ready(Some(CronEvent::Ok(self.next.clone().unwrap())))
                 }
             }
             // Theoretically, this branch is unreachable.
@@ -375,8 +389,8 @@ impl<Tz: TimeZone> FusedStream for CronStream<Tz> {
 #[pinned_drop]
 impl<Tz: TimeZone> PinnedDrop for CronStream<Tz> {
     fn drop(mut self: Pin<&mut Self>) {
-        if let FutureState::Waiting(key) = self.state {
-            self.send_cmd(ControlCmd::Remove { key });
+        if let FutureState::Waiting(key) = &self.state {
+            self.send_cmd(ControlCmd::Remove { key: key.clone() });
         }
         self.state = FutureState::Completed;
     }
@@ -447,13 +461,6 @@ fn next_instant<Tz: TimeZone>(now_nanos: i64, next: &DateTime<Tz>) -> Option<Ins
 }
 
 impl Schedule {
-    // Returns Instant of the upcoming event based on the provided current DateTime
-    fn upcoming_instant<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<Instant> {
-        let next = self.upcoming(current)?;
-        let now_nanos = current.timestamp_nanos_opt()?;
-        next_instant(now_nanos, &next)
-    }
-
     /// Returns [`CronSleep`] instance (wrapped into the `Option`) which implements
     /// [`Future`](https://doc.rust-lang.org/core/future/trait.Future.html).
     /// This `Future` falls asleep until the next upcoming event happened.
@@ -461,9 +468,12 @@ impl Schedule {
     /// In case when the schedule has no upcoming events, it returns `None` immediately.
     ///
     /// See [`CronSleep`] for complete documentation with examples.
-    pub fn sleep<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<CronSleep> {
-        let until = self.upcoming_instant(current)?;
-        let sleep = CronSleep::new(until);
+    pub fn sleep<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<CronSleep<Tz>> {
+        let next = self.upcoming(current)?;
+        let now_nanos = current.timestamp_nanos_opt()?;
+        let until = next_instant(now_nanos, &next)?;
+
+        let sleep = CronSleep::new(until, next);
         Some(sleep)
     }
 
@@ -502,7 +512,11 @@ mod tests {
 
     fn test_upcoming_instant_case<T: TimeZone>(schedule: &str, current: DateTime<T>, expected_delta: Duration) {
         let schedule = Schedule::try_from(schedule).unwrap();
-        let instant = schedule.upcoming_instant(&current).unwrap();
+
+        let next = schedule.upcoming(&current).unwrap();
+        let now_nanos = current.timestamp_nanos_opt().unwrap();
+        let instant = next_instant(now_nanos, &next).unwrap();
+
         let delta = instant - Instant::now();
         assert!(
             delta <= expected_delta,
@@ -512,17 +526,6 @@ mod tests {
             delta >= expected_delta - ACCEPTED_SLEEP_DRIFT,
             "drift is out of range: delta={delta:?}, expected={expected_delta:?}"
         );
-    }
-
-    #[rstest]
-    #[case("*/2 * * * * * 2024", "2025-01-01T00:00:00.001Z")]
-    #[case("* * * 29 2 * 2025", "2024-12-31T23:59:59Z")]
-    #[timeout(Duration::from_secs(3))]
-    fn test_upcoming_instant_unschedulable(#[case] schedule: &str, #[case] current: &str) {
-        let current = DateTime::parse_from_rfc3339(current).unwrap();
-        let schedule = Schedule::try_from(schedule).unwrap();
-        let instant = schedule.upcoming_instant(&current);
-        assert!(instant.is_none(), "instant={instant:?}");
     }
 
     #[rstest]
@@ -601,7 +604,7 @@ mod tests {
         let schedule = Schedule::try_from("*/2 * * * * *").unwrap();
         let now = Utc::now();
         let res = schedule.sleep(&now).unwrap().await;
-        assert_eq!(res, CronEvent::Ok);
+        assert!(matches!(res, CronEvent::Ok(_)));
     }
 
     #[tokio::test]
@@ -612,7 +615,7 @@ mod tests {
         let now = Utc::now();
         let sleep = schedule.sleep(&now).unwrap();
         tokio::time::sleep(Duration::from_millis(2100)).await;
-        assert_eq!(sleep.await, CronEvent::Missed);
+        assert!(matches!(sleep.await, CronEvent::Missed(_)));
     }
 
     #[tokio::test]
@@ -628,12 +631,13 @@ mod tests {
         stream.next().await;
         let next = stream.next().await;
         let start = Instant::now();
-        assert_eq!(next, Some(CronEvent::Ok));
+        // assert_eq!(next, Some(CronEvent::Ok));
+        assert!(matches!(next, Some(CronEvent::Ok(_))));
 
         tokio::time::sleep(INTERVAL - Duration::from_millis(50)).await;
         let next = stream.next().await;
         let elapsed = start.elapsed();
-        assert_eq!(next, Some(CronEvent::Ok));
+        assert!(matches!(next, Some(CronEvent::Ok(_))));
 
         assert!(
             elapsed <= INTERVAL + ACCEPTED_STREAM_DRIFT,
@@ -657,12 +661,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(5500)).await;
         let mut missed = 0;
 
-        while let Some(CronEvent::Missed) = stream.next().await {
+        while let Some(CronEvent::Missed(_)) = stream.next().await {
             missed += 1;
         }
 
         assert_eq!(missed, 5);
-        assert_eq!(stream.next().await, Some(CronEvent::Ok));
+        assert!(matches!(stream.next().await, Some(CronEvent::Ok(_))));
     }
 
     #[tokio::test]
@@ -673,7 +677,7 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2023, 12, 31, 23, 23, 23).unwrap();
         let mut stream = schedule.stream(&now);
 
-        assert_eq!(stream.next().await, Some(CronEvent::Missed));
+        assert!(matches!(stream.next().await, Some(CronEvent::Missed(_))));
         assert_eq!(stream.next().await, None);
     }
 
@@ -708,7 +712,7 @@ mod tests {
         let mut test_stream = schedule.stream(&now);
         assert!(!test_stream.is_terminated());
 
-        assert_eq!(test_stream.next().await, Some(CronEvent::Missed));
+        assert!(matches!(test_stream.next().await, Some(CronEvent::Missed(_))));
         assert!(!test_stream.is_terminated());
 
         assert_eq!(test_stream.next().await, None);
@@ -728,7 +732,7 @@ mod tests {
         let test_stream = schedule.stream(&now).skip(1).take(5).collect::<Vec<_>>().await;
 
         assert_eq!(test_stream.len(), 5);
-        assert!(test_stream.iter().all(|e| e == &CronEvent::Ok))
+        assert!(test_stream.iter().all(|e| matches!(e, &CronEvent::Ok(_))))
     }
 
     #[rstest]
@@ -751,7 +755,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(3)).await;
         let result = test_stream.collect::<Vec<_>>().await;
-        assert!(result.iter().all(|e| e == &CronEvent::Ok));
+        assert!(result.iter().all(|e| matches!(e, &CronEvent::Ok(_))));
         assert_eq!(result.len(), 2);
     }
 
