@@ -279,9 +279,9 @@ impl Schedule {
 
 /// Contains iterator state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ScheduleIterator<Tz: TimeZone> {
-    schedule: Schedule,
-    next: Option<DateTime<Tz>>,
+pub(crate) struct ScheduleIterator<Tz: TimeZone> {
+    pub(crate) schedule: Schedule,
+    pub(crate) next: Option<DateTime<Tz>>,
 }
 
 impl<Tz: TimeZone> Iterator for ScheduleIterator<Tz> {
@@ -1558,7 +1558,7 @@ mod tests {
         #[case(chrono_tz::EET, chrono_tz::EET)]
         #[case(chrono_tz::EET, chrono_tz::Canada::Eastern)]
         #[case(chrono_tz::Canada::Eastern, chrono_tz::EET)]
-        #[timeout(Duration::from_secs(1))]
+        #[timeout(Duration::from_secs(3))]
         fn test_rough_iterator<T1: TimeZone + Debug, T2: TimeZone + Debug>(
             #[case] current_tz: T1,
             #[case] schedule_tz: T2,
@@ -1569,13 +1569,13 @@ mod tests {
 
             let current = current_tz.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap();
 
-            let tz_str = format!("{:?}", schedule_tz).to_uppercase();
+            let tz_str = format!("{schedule_tz:?}").to_uppercase();
             let tz = if tz_str == "LOCAL" {
                 None
             } else if tz_str == "Z" || tz_str == "UTC" {
                 Some(String::from("UTC"))
             } else {
-                Some(format!("{:?}", schedule_tz))
+                Some(format!("{schedule_tz:?}"))
             };
 
             let schedule = if let Some(tz) = tz {

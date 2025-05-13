@@ -14,9 +14,9 @@ Lightweight cron expressions parser and time series generator.
 This tiny crate is intended to:
 
 - parse almost all kinds of popular cron schedule formats;
-- generate series of timestamps according to the schedule.
+- generate a series of timestamps according to the schedule.
 
-It has a single external dependency - [chrono](https://crates.io/crates/chrono).
+It has a single external dependency - [chrono](https://crates.io/crates/chrono) (with default features set).
 
 _This is not a cron jobs scheduler or runner._ If you need a scheduler/runner, look
 for [sacs](https://crates.io/crates/sacs) of
@@ -24,17 +24,17 @@ any [other similar crate](https://crates.io/search?q=async%20cron%20scheduler).
 
 ## Cron schedule format
 
-Traditionally, cron schedule expression has a 5-fields format: minutes, hours, days, months and days of week.
+Traditionally, cron schedule expression has a 5-fields format: minutes, hours, days, months, and days of the week.
 This crate uses such a format by default, but two optional fields may be added, seconds and years:
 
 - if _seconds_ is empty, `0` is used by default;
 - if _years_ is empty, `*` is used by default;
-- if 6-fields schedule is specified, then _seconds_ filed is assumed as first and years as empty (default).
+- if the 6-fields schedule is specified, then _seconds_ filed is assumed as first and years as empty (default).
 
 The table below describes valid values and patterns of each field:
 
 | Field        | Required | Allowed values  | Allowed special characters |
-|--------------|----------|-----------------|----------------------------|
+| ------------ | -------- | --------------- | -------------------------- |
 | Seconds      | No       | 0-59            | * , - /                    |
 | Minutes      | Yes      | 0-59            | * , - /                    |
 | Hours        | Yes      | 0-23            | * , - /                    |
@@ -59,7 +59,7 @@ Patterns meanings:
 Also, short aliases for well-known schedule expressions are allowed:
 
 | Alias                      | Expression    |
-|----------------------------|---------------|
+| -------------------------- | ------------- |
 | `@yearly` (or `@annually`) | 0 0 0 1 1 ? * |
 | `@monthly`                 | 0 0 0 1 * ? * |
 | `@weekly`                  | 0 0 0 ? * 0 * |
@@ -82,7 +82,9 @@ The single entity of the crate is a `Schedule` structure, which has three basic 
 
 - `new()`: constructor to parse and validate provided schedule;
 - `upcoming()`: returns time of the next schedule's event, starting from the provided timestamp;
-- `iter()`: returns an `Iterator` which produces series of timestamps according to the schedule.
+- `iter()`: returns an `Iterator` which produces series of timestamps according to the schedule;
+- `sleep()`: falls asleep until time of the upcoming schedule's event (`async` feature only);
+- `stream()`: construct `Stream` which asynchronously generates events right in scheduled time (`async` feature only).
 
 ### Example with `upcoming`
 
@@ -119,20 +121,36 @@ fn main() -> Result<()> {
 }
 ```
 
+### Example with `stream`
+
+```rust
+use chrono::Local;
+use cron_lite::{CronEvent, Result, Schedule};
+use futures::stream::StreamExt;
+async fn stream() -> Result<()> {
+    let schedule = Schedule::new("*/15 * * * * *")?;
+    let now = Local::now();
+    // Wake up every 15 seconds 10 times starting from now but skip the first event.
+    let mut s = schedule.stream(&now).skip(1).take(10);
+    while let Some(event) = s.next().await {
+        assert_eq!(event, CronEvent::Ok);
+        println!("next: {event:?}");
+    }
+    Ok(())
+}
+```
+
 ## Feature flags
 
 * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [
-  `Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for [`Schedule`].
+  `Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for `Schedule`.
 * `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
+* `async`: adds several methods to use in async environments. See documentation of the module for details.
 
 ## TODO
 
 - [ ] Descriptive example.
-- [x] Performance tests.
 - [ ] More unit tests for edge cases.
-- [x] Aliases: `@yearly`, `@annually`, `@monthly`, `@daily`, `@midnight`, `@hourly`.
-- [x] Feature `tz`: timezone-aware schedule pattern.
-- [x] Feature `serde`: implement Serialize/Deserialize traits for `Schedule`.
 
 ## License
 
