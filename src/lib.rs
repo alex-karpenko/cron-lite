@@ -5,7 +5,7 @@
 //! - parse almost all kinds of popular cron schedule formats;
 //! - generates a series of timestamps according to the schedule.
 //!
-//! It has a single external dependency - [chrono](https://crates.io/crates/chrono).
+//! It has a single external dependency - [chrono](https://crates.io/crates/chrono) (with default features set).
 //!
 //! _This is not a cron jobs scheduler or runner._ If you need a scheduler/runner,
 //! look for [sacs](https://crates.io/crates/sacs)
