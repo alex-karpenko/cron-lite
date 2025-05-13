@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2025-05-13
+### Details
+#### Added
+- Implement sleep and stream functionality in async feature by @alex-karpenko in [#13](https://github.com/alex-karpenko/cron-lite/pull/13)
+
 ## [0.2.2] - 2025-03-29
 ### Details
 #### Added
@@ -40,6 +45,7 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.3.0]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.2..v0.3.0
 [0.2.2]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.1..v0.2.2
 [0.2.1]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.0..v0.2.1
 [0.2.0]: https://github.com/alex-karpenko/cron-lite/compare/v0.1.0..v0.2.0
