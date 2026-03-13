@@ -28,9 +28,9 @@ serde = { version = "1.0", default-features = false, features = ["derive", "std"
 
 [dev-dependencies]
 chrono = { version = "0.4.20", default-features = false, features = ["now", "clock"] }
-criterion = "0.5.1"
+criterion = "0.8.1"
 futures = { version = "0.3.31", default-features = false, features = ["executor"] }
-rstest = { version = "0.25.0", default-features = false }
+rstest = { version = "0.26.1", default-features = false }
 rstest_reuse = { version = "0.7.0", default-features = false }
 tokio = { version = "1.45.0", default-features = false, features = ["time", "macros", "rt-multi-thread"] }
 
