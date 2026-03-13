@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-03-13
+### Details
+#### Breaking changes
+- Increase MSRV to 1.85 by @alex-karpenko in [#15](https://github.com/alex-karpenko/cron-lite/pull/15)
+- Increase MSRV to 1.86 by @alex-karpenko in [#16](https://github.com/alex-karpenko/cron-lite/pull/16)
+
+#### Fixed
+- Update criterion version by @alex-karpenko in [#14](https://github.com/alex-karpenko/cron-lite/pull/14)
+
 ## [0.3.0] - 2025-05-13
 ### Details
 #### Added
@@ -45,6 +54,7 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.3.1]: https://github.com/alex-karpenko/cron-lite/compare/v0.3.0..v0.3.1
 [0.3.0]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.2..v0.3.0
 [0.2.2]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.1..v0.2.2
 [0.2.1]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.0..v0.2.1
