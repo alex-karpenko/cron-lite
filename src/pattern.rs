@@ -203,106 +203,7 @@ impl Pattern {
             PatternType::Years => current.year() as PatternValueType,
         };
 
-        let mut value: Option<PatternValueType> = match &self.pattern {
-            PatternItem::List(values) => {
-                // iterate over all elements of the list and determine the minimum
-                // possible valid value if it exists
-                let mut min: Option<PatternValueType> = None;
-
-                for pattern in values {
-                    let item = Self {
-                        type_: self.type_,
-                        pattern: pattern.clone(),
-                    };
-                    let mut current = current.clone();
-                    if let Some(next) = item.next(&mut current) {
-                        if let Some(prev) = min {
-                            if next < prev {
-                                min = Some(next);
-                            }
-                        } else {
-                            min = Some(next);
-                        }
-                    }
-                }
-                min
-            }
-            // just the first possible in a row
-            PatternItem::All => Some(start),
-            // specific single value if not DOW
-            PatternItem::Particular(value) if self.type_ != PatternType::Dows => {
-                if *value >= start && *value <= max {
-                    Some(*value)
-                } else {
-                    None
-                }
-            }
-            // or day of month for a specific day of week
-            PatternItem::Particular(value) if self.type_ == PatternType::Dows => (start..=max).find(|&day| {
-                utils::day_of_week(
-                    current.year() as PatternValueType,
-                    current.month() as PatternValueType,
-                    day,
-                ) == *value
-            }),
-            // the first value in the range that's >= start
-            PatternItem::Range(begin, end) if self.type_ != PatternType::Dows => {
-                SeriesWithStep::new(*begin, *end, 1, *begin).find(|v| *v >= start && *v <= max)
-            }
-            // the same, but for a DOW range, we return the day of month represented by the DOW
-            PatternItem::Range(first_dow, last_dow) if self.type_ == PatternType::Dows => (start..=max).find(|&day| {
-                let dow = utils::day_of_week(
-                    current.year() as PatternValueType,
-                    current.month() as PatternValueType,
-                    day,
-                );
-                dow >= *first_dow && dow <= *last_dow
-            }),
-            PatternItem::RepeatingValue(range_start, step) => {
-                SeriesWithStep::new(*range_start, max, *step, *range_start).find(|v| *v >= start)
-            }
-            PatternItem::RepeatingRange(min, max, step) => {
-                SeriesWithStep::new(*min, *max, *step, *min).find(|v| *v >= start)
-            }
-            PatternItem::LastDow(dow) => {
-                let last_dow = utils::last_dow(
-                    current.year() as PatternValueType,
-                    current.month() as PatternValueType,
-                    *dow,
-                );
-                if last_dow >= current.day() as PatternValueType {
-                    Some(last_dow)
-                } else {
-                    None
-                }
-            }
-            PatternItem::LastDom => Some(days_in_month(
-                current.year() as PatternValueType,
-                current.month() as PatternValueType,
-            )),
-            PatternItem::Weekday(dom) => {
-                let weekday = utils::nearest_weekday(
-                    current.year() as PatternValueType,
-                    current.month() as PatternValueType,
-                    *dom,
-                );
-                if weekday >= start {
-                    Some(weekday)
-                } else {
-                    None
-                }
-            }
-            PatternItem::Hash(dow, number) => utils::nth_dow(
-                current.year() as PatternValueType,
-                current.month() as PatternValueType,
-                *dow,
-                *number,
-            )
-            .filter(|&day| day >= current.day() as PatternValueType),
-            // theoretically, we shouldn't call this `next` method for indifferent types.
-            PatternItem::Any => None,
-            PatternItem::Particular(_) | PatternItem::Range(..) => unreachable!(),
-        };
+        let mut value = self.next_value(current, start, max);
 
         // if we got a value greater than the current one,
         // we have to update all dependent elements to their first valid values,
@@ -351,52 +252,7 @@ impl Pattern {
                                     value = None;
                                     break;
                                 }
-                                candidate = match &self.pattern {
-                                    PatternItem::All => Some(next_start),
-                                    PatternItem::Particular(val) => {
-                                        if *val >= next_start && *val <= max {
-                                            Some(*val)
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    PatternItem::Range(begin, end) => SeriesWithStep::new(*begin, *end, 1, *begin)
-                                        .find(|v| *v >= next_start && *v <= max),
-                                    PatternItem::RepeatingValue(range_start, step) => {
-                                        SeriesWithStep::new(*range_start, max, *step, *range_start)
-                                            .find(|v| *v >= next_start)
-                                    }
-                                    PatternItem::RepeatingRange(min, max, step) => {
-                                        SeriesWithStep::new(*min, *max, *step, *min).find(|v| *v >= next_start)
-                                    }
-                                    PatternItem::List(values) => {
-                                        let mut min_val: Option<PatternValueType> = None;
-                                        for p in values {
-                                            let item = Self {
-                                                type_: self.type_,
-                                                pattern: p.clone(),
-                                            };
-                                            let mut c = current.clone();
-                                            if let Some(n) = item.next(&mut c) {
-                                                if n >= next_start {
-                                                    if let Some(prev) = min_val {
-                                                        if n < prev {
-                                                            min_val = Some(n);
-                                                        }
-                                                    } else {
-                                                        min_val = Some(n);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        min_val
-                                    }
-                                    PatternItem::Any
-                                    | PatternItem::LastDow(_)
-                                    | PatternItem::LastDom
-                                    | PatternItem::Weekday(_)
-                                    | PatternItem::Hash(..) => None,
-                                };
+                                candidate = self.next_value(current, next_start, max);
                             } else {
                                 value = None;
                                 break;
@@ -414,6 +270,113 @@ impl Pattern {
         }
 
         value
+    }
+
+    fn next_value<Tz: TimeZone>(
+        &self,
+        current: &DateTime<Tz>,
+        start: PatternValueType,
+        max: PatternValueType,
+    ) -> Option<PatternValueType> {
+        match &self.pattern {
+            PatternItem::List(values) => {
+                let mut min: Option<PatternValueType> = None;
+                for pattern in values {
+                    let item = Self {
+                        type_: self.type_,
+                        pattern: pattern.clone(),
+                    };
+                    if let Some(next) = item.next_value(current, start, max) {
+                        if let Some(prev) = min {
+                            if next < prev {
+                                min = Some(next);
+                            }
+                        } else {
+                            min = Some(next);
+                        }
+                    }
+                }
+                min
+            }
+            PatternItem::All => Some(start),
+            PatternItem::Particular(value) => {
+                if self.type_ != PatternType::Dows {
+                    if *value >= start && *value <= max {
+                        Some(*value)
+                    } else {
+                        None
+                    }
+                } else {
+                    (start..=max).find(|&day| {
+                        utils::day_of_week(
+                            current.year() as PatternValueType,
+                            current.month() as PatternValueType,
+                            day,
+                        ) == *value
+                    })
+                }
+            }
+            PatternItem::Range(begin, end) => {
+                if self.type_ != PatternType::Dows {
+                    SeriesWithStep::new(*begin, *end, 1, *begin).find(|v| *v >= start && *v <= max)
+                } else {
+                    (start..=max).find(|&day| {
+                        let dow = utils::day_of_week(
+                            current.year() as PatternValueType,
+                            current.month() as PatternValueType,
+                            day,
+                        );
+                        dow >= *begin && dow <= *end
+                    })
+                }
+            }
+            PatternItem::RepeatingValue(range_start, step) => {
+                SeriesWithStep::new(*range_start, max, *step, *range_start).find(|v| *v >= start)
+            }
+            PatternItem::RepeatingRange(min, max, step) => {
+                SeriesWithStep::new(*min, *max, *step, *min).find(|v| *v >= start)
+            }
+            PatternItem::LastDow(dow) => {
+                let last_dow = utils::last_dow(
+                    current.year() as PatternValueType,
+                    current.month() as PatternValueType,
+                    *dow,
+                );
+                if last_dow >= current.day() as PatternValueType && last_dow >= start {
+                    Some(last_dow)
+                } else {
+                    None
+                }
+            }
+            PatternItem::LastDom => {
+                let last_dom = days_in_month(current.year() as PatternValueType, current.month() as PatternValueType);
+                if last_dom >= start {
+                    Some(last_dom)
+                } else {
+                    None
+                }
+            }
+            PatternItem::Weekday(dom) => {
+                let weekday = utils::nearest_weekday(
+                    current.year() as PatternValueType,
+                    current.month() as PatternValueType,
+                    *dom,
+                );
+                if weekday >= start {
+                    Some(weekday)
+                } else {
+                    None
+                }
+            }
+            PatternItem::Hash(dow, number) => utils::nth_dow(
+                current.year() as PatternValueType,
+                current.month() as PatternValueType,
+                *dow,
+                *number,
+            )
+            .filter(|&day| day >= start),
+            PatternItem::Any => None,
+        }
     }
 }
 

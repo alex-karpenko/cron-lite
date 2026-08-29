@@ -809,4 +809,88 @@ mod tests {
             handle.await.unwrap();
         }
     }
+
+    #[test]
+    fn test_sleep_drop_while_waiting() {
+        use futures::task::noop_waker;
+        use std::task::{Context, Poll};
+
+        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        let now = Utc::now();
+        let mut sleep = schedule.sleep(&now).unwrap();
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        // First poll transitions to Waiting
+        let pin_sleep = Pin::new(&mut sleep);
+        assert!(matches!(pin_sleep.poll(&mut cx), Poll::Pending | Poll::Ready(_)));
+
+        // Second poll while Waiting (refreshes waker)
+        let pin_sleep = Pin::new(&mut sleep);
+        let _ = pin_sleep.poll(&mut cx);
+
+        // Dropping sleep while in Waiting tests PinnedDrop
+        drop(sleep);
+    }
+
+    #[tokio::test]
+    async fn test_sleep_poll_after_completed() {
+        use futures::task::noop_waker;
+        use std::task::{Context, Poll};
+
+        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        let now = Utc::now();
+        let mut sleep = schedule.sleep(&now).unwrap();
+
+        let _ = (&mut sleep).await;
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let pin_sleep = Pin::new(&mut sleep);
+        assert!(matches!(pin_sleep.poll(&mut cx), Poll::Ready(_)));
+    }
+
+    #[test]
+    fn test_stream_drop_while_waiting() {
+        use futures::task::noop_waker;
+        use std::task::{Context, Poll};
+
+        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        let now = Utc::now();
+        let mut stream = schedule.stream(&now);
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        // First poll transitions to Waiting
+        let pin_stream = Pin::new(&mut stream);
+        assert!(matches!(pin_stream.poll_next(&mut cx), Poll::Pending | Poll::Ready(_)));
+
+        // Second poll while Waiting (refreshes waker)
+        let pin_stream = Pin::new(&mut stream);
+        let _ = pin_stream.poll_next(&mut cx);
+
+        // Dropping stream while in Waiting tests PinnedDrop
+        drop(stream);
+    }
+
+    #[test]
+    fn test_stream_poll_after_completed() {
+        use futures::task::noop_waker;
+        use std::task::{Context, Poll};
+
+        let schedule = Schedule::try_from("0 0 0 1 1 * 2020").unwrap();
+        let now = Utc::now();
+        let mut stream = schedule.stream(&now);
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let pin_stream = Pin::new(&mut stream);
+        assert_eq!(pin_stream.poll_next(&mut cx), Poll::Ready(None));
+
+        // Poll again on Completed
+        let pin_stream = Pin::new(&mut stream);
+        assert_eq!(pin_stream.poll_next(&mut cx), Poll::Ready(None));
+    }
 }

@@ -1284,6 +1284,12 @@ mod tests {
         #[case("TZ=EET @hourly", "2000-10-29T01:00:01Z", "2000-10-29T02:00:00+00:00")] // 10
         #[case("TZ=EET @hourly", "2000-10-29T02:00:01Z", "2000-10-29T03:00:00+00:00")]
         #[case("TZ=Europe/Kyiv 0 3-5 * * *", "2025-03-30T00:00:00Z", "2025-03-30T01:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 * * * *", "2025-03-30T00:00:01Z", "2025-03-30T01:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3 * * *", "2025-03-30T00:00:00Z", "2025-03-31T00:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3/2 * * *", "2025-03-30T00:00:00Z", "2025-03-30T02:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 2-6/2 * * *", "2025-03-30T00:00:01Z", "2025-03-30T01:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3,4 * * *", "2025-03-30T00:00:00Z", "2025-03-30T01:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3,5 * * *", "2025-03-30T00:00:00Z", "2025-03-30T02:00:00+00:00")]
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
             let schedule = Schedule::new(pattern).unwrap();
