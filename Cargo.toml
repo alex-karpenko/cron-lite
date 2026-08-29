@@ -10,7 +10,7 @@ keywords = ["time", "cron", "schedule", "async", "periodic"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/alex-karpenko/cron-lite"
-version = "0.3.1"
+version = "0.4.0"
 exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".gitignore", "mutants.*/**"]
 
 [features]
@@ -37,3 +37,10 @@ tokio = { version = "1.45.0", default-features = false, features = ["time", "mac
 [[bench]]
 name = "schedule"
 harness = false
+
+[lints.clippy]
+fallible_impl_from = "deny"
+wildcard_enum_match_arm = "deny"
+unneeded_field_pattern = "deny"
+fn_params_excessive_bools = "deny"
+must_use_candidate = "deny"

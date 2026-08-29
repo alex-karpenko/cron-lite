@@ -1,4 +1,4 @@
-/// Generator of numbers series.
+/// Generator of a series of numbers.
 use std::ops::{Add, AddAssign};
 
 /// Generator (iterator) state.
@@ -14,23 +14,18 @@ where
     T: Copy + Add + AddAssign + PartialOrd,
     <T as Add>::Output: PartialOrd<T>,
 {
-    /// Caller is responsible to ensure that
-    /// maximum serial value (max+step) isn't greater than type's maximum.
+    /// The caller is responsible for ensuring that
+    /// the maximum serial value (max+step) isn't greater than the type's maximum.
     ///
     /// Panics if one of the parameters is out of bounds.
     #[inline]
     pub(crate) fn new(min: T, max: T, step: T, start: T) -> Self {
-        if max < min {
-            panic!("max value is less than min value");
-        }
-
-        if start < min || start > max {
-            panic!("start value is less than min or greater than max");
-        }
-
-        if min + step == min {
-            panic!("step value is 0");
-        }
+        assert!(max >= min, "max value is less than min value");
+        assert!(
+            !(start < min || start > max),
+            "start value is less than min or greater than max"
+        );
+        assert!(min + step != min, "step value is 0");
 
         let next = if start == min {
             min
@@ -42,7 +37,7 @@ where
             next
         };
 
-        Self { next, max, step }
+        Self { max, step, next }
     }
 }
 
@@ -121,26 +116,29 @@ mod tests {
     #[case(2, 5, 1, 1)]
     fn series_should_panic<T>(#[case] min: T, #[case] max: T, #[case] step: T, #[case] start: T) {}
 
+    // Each case below panics for a different reason (max < min, start out of bounds, or
+    // step == 0) so the shared `expected` substring below only asserts the common part of
+    // SeriesWithStep::new's panic messages, not a single specific one.
     #[apply(series_should_panic)]
-    #[should_panic]
+    #[should_panic(expected = "value")]
     fn series_should_panic_u8(min: u8, max: u8, step: u8, start: u8) {
         SeriesWithStep::<u8>::new(min, max, step, start);
     }
 
     #[apply(series_should_panic)]
-    #[should_panic]
+    #[should_panic(expected = "value")]
     fn series_should_panic_u16(min: u16, max: u16, step: u16, start: u16) {
         SeriesWithStep::<u16>::new(min, max, step, start);
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "attempt to add with overflow")]
     fn series_should_panic_by_overflow_u8() {
         SeriesWithStep::<u8>::new(254, 255, 2, 254);
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "attempt to add with overflow")]
     fn series_should_panic_by_overflow_u16() {
         SeriesWithStep::<u16>::new(65534, 65535, 2, 65534);
     }

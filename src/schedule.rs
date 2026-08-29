@@ -14,6 +14,33 @@ pub const MAX_YEAR: u16 = 2099;
 
 pub(crate) const MIN_YEAR_STR: &str = "1970";
 
+/// Classifies which of the day-of-month / day-of-week patterns should drive the "day"
+/// computation, given cron's DOM/DOW relationship rules: at least one of them must be
+/// indifferent (`*` or `?`) for a schedule to be valid. Shared between construction-time
+/// validation and the day-of-month lookup during upcoming-event calculation, so both
+/// stay in agreement if the relationship rules are ever changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DomDowRelation {
+    /// Day of month drives the day computation.
+    Dom,
+    /// Day of week drives the day computation.
+    Dow,
+    /// Both fields are constrained, or both are indifferent - invalid combination.
+    Invalid,
+}
+
+impl DomDowRelation {
+    fn classify(dom: &PatternItem, dow: &PatternItem) -> Self {
+        match (dom, dow) {
+            (PatternItem::Any, PatternItem::Any) => Self::Invalid,
+            (PatternItem::All, PatternItem::All | PatternItem::Any) => Self::Dom,
+            (PatternItem::All | PatternItem::Any, _) => Self::Dow,
+            (_, PatternItem::All | PatternItem::Any) => Self::Dom,
+            (_, _) => Self::Invalid,
+        }
+    }
+}
+
 /// Represents a cron schedule pattern with its methods.
 ///
 /// For cron schedule clarification and usage examples, please refer to the [crate documentation](crate).
@@ -34,11 +61,12 @@ pub struct Schedule {
 }
 
 impl Schedule {
-    /// Parses and validates provided `pattern` and constructs [`Schedule`] instance.
+    /// Parses and validates the provided `pattern` and constructs a [`Schedule`] instance.
     ///
-    /// Alternative way to construct [`Schedule`] is to use one of `try_from` or `from_str` methods .
+    /// An alternative way to construct a [`Schedule`] is to use one of the `try_from` or `from_str` methods.
     ///
-    /// Returns [`CronError`] in a case provided pattern is unparsable or has format errors.
+    /// # Errors
+    /// Returns [`CronError`] if the provided pattern is unparsable or has format errors.
     pub fn new(pattern: impl Into<String>) -> Result<Self> {
         let pattern = pattern.into();
         let mut elements: Vec<&str> = pattern.split_whitespace().collect();
@@ -62,7 +90,7 @@ impl Schedule {
 
         // Check the number of elements in the provided expression and augment it with defaults.
         if elements.len() == 1 {
-            // Check fo aliases
+            // Check for aliases
             match elements[0] {
                 "@yearly" | "@annually" => elements = vec!["0", "0", "0", "1", "1", "?", "*"],
                 "@monthly" => elements = vec!["0", "0", "0", "1", "*", "?", "*"],
@@ -94,27 +122,24 @@ impl Schedule {
         };
 
         // Validate DOM and DOW relationship.
-        match (schedule.dom.pattern(), schedule.dow.pattern()) {
-            (PatternItem::Any, PatternItem::Any) => return Err(CronError::InvalidDaysPattern(pattern)),
-            (PatternItem::All, _) | (_, PatternItem::All) | (PatternItem::Any, _) | (_, PatternItem::Any) => {}
-            (_, _) => {
-                return Err(CronError::InvalidDaysPattern(pattern));
-            }
+        if DomDowRelation::classify(schedule.dom.pattern(), schedule.dow.pattern()) == DomDowRelation::Invalid {
+            return Err(CronError::InvalidDaysPattern(pattern));
         }
 
         Ok(schedule)
     }
 
-    /// Return time of the upcoming cron event, starting from the provided `current` value (inclusively).
+    /// Returns the time of the upcoming cron event, starting from the provided `current` value (inclusively).
     ///
-    /// If `tz` feature isn't enabled,
-    /// this method assumes that schedule timezone is the same as timezone of the provided `current` instance.
+    /// If the `tz` feature isn't enabled,
+    /// this method assumes that the schedule's timezone is the same as the timezone of the provided `current`
+    /// instance.
     ///
-    /// If `tz` feature is enabled and [schedule uses timezone](crate#schedule-with-timezone),
-    /// then method calculates time of the upcoming event with respect to the schedule's timezone:
-    /// - converts `current` into schedule timezone;
-    /// - calculates upcoming event time;
-    /// - converts obtained upcoming value back to the timezone of the `current` instance.
+    /// If the `tz` feature is enabled and the [schedule uses a timezone](crate#schedule-with-timezone),
+    /// then the method calculates the time of the upcoming event with respect to the schedule's timezone:
+    /// - converts `current` into the schedule's timezone;
+    /// - calculates the upcoming event's time;
+    /// - converts the obtained upcoming value back to the timezone of the `current` instance.
     ///
     /// Returns `None` if there is no time for the upcoming event.
     #[cfg(not(feature = "tz"))]
@@ -123,7 +148,19 @@ impl Schedule {
         self.upcoming_impl(current)
     }
 
-    /// Doc is above.
+    /// Returns the time of the upcoming cron event, starting from the provided `current` value (inclusively).
+    ///
+    /// If the `tz` feature isn't enabled,
+    /// this method assumes that the schedule's timezone is the same as the timezone of the provided `current`
+    /// instance.
+    ///
+    /// If the `tz` feature is enabled and the [schedule uses a timezone](crate#schedule-with-timezone),
+    /// then the method calculates the time of the upcoming event with respect to the schedule's timezone:
+    /// - converts `current` into the schedule's timezone;
+    /// - calculates the upcoming event's time;
+    /// - converts the obtained upcoming value back to the timezone of the `current` instance.
+    ///
+    /// Returns `None` if there is no time for the upcoming event.
     #[cfg(feature = "tz")]
     pub fn upcoming<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
         if let Some(schedule_tz) = &self.tz {
@@ -136,17 +173,13 @@ impl Schedule {
         }
     }
 
-    /// Return time of the upcoming cron event starting from (including) provided `current` value.
+    /// Returns the time of the upcoming cron event, starting from (and including) the provided `current` value.
     ///
-    /// Returns `None` if there is no upcoming event's time.
+    /// Returns `None` if there is no upcoming event.
     fn upcoming_impl<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
         // Normalize current time to the start of the whole second.
         let mut current = if current.nanosecond() > 0 {
-            current
-                .with_nanosecond(0)
-                .unwrap()
-                .checked_add_signed(TimeDelta::seconds(1))
-                .unwrap()
+            current.with_nanosecond(0)?.checked_add_signed(TimeDelta::seconds(1))?
         } else {
             current.clone()
         };
@@ -157,7 +190,7 @@ impl Schedule {
         let mut hour = Some(current.hour() as PatternValueType);
         let mut minute = Some(current.minute() as PatternValueType);
         let mut second = Some(current.second() as PatternValueType);
-        let mut first_iteration = true; // since we don't have `util` loop
+        let mut first_iteration = true; // since we don't have a `do-while` loop
 
         while year.is_none()
             || month.is_none()
@@ -169,7 +202,7 @@ impl Schedule {
         {
             first_iteration = false;
 
-            // Jump over to the next possible value is needed.
+            // Jump to the next possible value, if needed.
             if year.is_none() {
                 return None;
             } else if month.is_none() {
@@ -185,12 +218,12 @@ impl Schedule {
             }
 
             current = match current.timezone().with_ymd_and_hms(
-                year? as i32,
-                month? as u32,
-                dom? as u32,
-                hour? as u32,
-                minute? as u32,
-                second? as u32,
+                i32::from(year?),
+                u32::from(month?),
+                u32::from(dom?),
+                u32::from(hour?),
+                u32::from(minute?),
+                u32::from(second?),
             ) {
                 LocalResult::Single(updated_current) => updated_current,
                 LocalResult::Ambiguous(earliest, _latest) => earliest,
@@ -208,16 +241,10 @@ impl Schedule {
                 year = Some(current.year() as PatternValueType);
                 if month.is_some() {
                     // Prepare day of month depending on DOM/DOW pattern types.
-                    dom = match (self.dom.pattern(), self.dow.pattern()) {
-                        (PatternItem::All, PatternItem::All) => self.dom.next(&mut current),
-                        (PatternItem::All, PatternItem::Any) => self.dom.next(&mut current),
-                        (PatternItem::All, _) => self.dow.next(&mut current),
-                        (PatternItem::Any, PatternItem::All) => self.dow.next(&mut current),
-                        (PatternItem::Any, PatternItem::Any) => unreachable!(),
-                        (PatternItem::Any, _) => self.dow.next(&mut current),
-                        (_, PatternItem::All) => self.dom.next(&mut current),
-                        (_, PatternItem::Any) => self.dom.next(&mut current),
-                        (_, _) => unreachable!(),
+                    dom = match DomDowRelation::classify(self.dom.pattern(), self.dow.pattern()) {
+                        DomDowRelation::Dom => self.dom.next(&mut current),
+                        DomDowRelation::Dow => self.dow.next(&mut current),
+                        DomDowRelation::Invalid => unreachable!(),
                     };
                     year = Some(current.year() as PatternValueType);
                     month = Some(current.month() as PatternValueType);
@@ -247,12 +274,12 @@ impl Schedule {
         }
 
         match current.timezone().with_ymd_and_hms(
-            year? as i32,
-            month? as u32,
-            dom? as u32,
-            hour? as u32,
-            minute? as u32,
-            second? as u32,
+            i32::from(year?),
+            u32::from(month?),
+            u32::from(dom?),
+            u32::from(hour?),
+            u32::from(minute?),
+            u32::from(second?),
         ) {
             LocalResult::Single(current) => Some(current),
             LocalResult::Ambiguous(earliest, _latest) => Some(earliest),
@@ -260,7 +287,7 @@ impl Schedule {
         }
     }
 
-    /// Returns iterator of events starting from `current` (inclusively).
+    /// Returns an iterator of events starting from `current` (inclusively).
     #[inline]
     pub fn iter<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
         ScheduleIterator {
@@ -269,7 +296,7 @@ impl Schedule {
         }
     }
 
-    /// Consumes [`Schedule`] and returns iterator of events starting from `current` (inclusively).
+    /// Consumes the [`Schedule`] and returns an iterator of events starting from `current` (inclusively).
     #[inline]
     pub fn into_iter<Tz: TimeZone>(self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
         let next = self.upcoming(current);
@@ -277,7 +304,7 @@ impl Schedule {
     }
 }
 
-/// Contains iterator state.
+/// Contains the iterator state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ScheduleIterator<Tz: TimeZone> {
     pub(crate) schedule: Schedule,
@@ -368,7 +395,7 @@ impl Display for Schedule {
     }
 }
 
-/// Increments current year and set all other elements to the first valid value.
+/// Increments the current year and sets all other elements to their first valid values.
 #[inline]
 fn inc_year(
     year: &mut Option<PatternValueType>,
@@ -393,7 +420,7 @@ fn inc_year(
     }
 }
 
-/// Increments current month and set all other elements to the first valid value.
+/// Increments the current month and sets all other elements to their first valid values.
 #[inline]
 fn inc_month(
     year: &mut Option<PatternValueType>,
@@ -417,7 +444,7 @@ fn inc_month(
     }
 }
 
-/// Increments current day of month and set all other elements to the first valid value.
+/// Increments the current day of month and sets all other elements to their first valid values.
 #[inline]
 fn inc_dom(
     year: &mut Option<PatternValueType>,
@@ -440,7 +467,7 @@ fn inc_dom(
     }
 }
 
-/// Increments current hour and set all other elements to the first valid value.
+/// Increments the current hour and sets all other elements to their first valid values.
 #[inline]
 fn inc_hour(
     year: &mut Option<PatternValueType>,
@@ -462,7 +489,7 @@ fn inc_hour(
     }
 }
 
-/// Increments current minute and set all other elements to the first valid value.
+/// Increments the current minute and sets all other elements to their first valid values.
 #[inline]
 fn inc_minute(
     year: &mut Option<PatternValueType>,
@@ -950,6 +977,9 @@ mod tests {
     }
 
     #[apply(valid_schedules_to_test)]
+    // rstest's #[case] expansion references `_expected` by name even though this test body
+    // doesn't need it, which trips clippy's used-underscore-binding lint as a false positive.
+    #[allow(clippy::used_underscore_binding)]
     fn test_try_from_string(#[case] input: &str, #[case] _expected: &str) {
         // &str
         let schedule1 = Schedule::new(input).unwrap();
@@ -1199,6 +1229,9 @@ mod tests {
         }
 
         #[apply(valid_schedules_to_test)]
+        // rstest's #[case] expansion references `_expected` by name even though this test body
+        // doesn't need it, which trips clippy's used-underscore-binding lint as a false positive.
+        #[allow(clippy::used_underscore_binding)]
         fn test_try_from_string(#[case] input: &str, #[case] _expected: &str) {
             // &str
             let schedule1 = Schedule::new(input).unwrap();
