@@ -1424,4 +1424,197 @@ mod tests {
         assert_eq!(next.minute(), 30);
         assert_eq!(next.hour(), 2);
     }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct MockTz;
+
+    use std::cell::RefCell;
+    thread_local! {
+        #[allow(clippy::type_complexity)]
+        static MOCK_TZ_VALIDATOR: RefCell<Box<dyn Fn(&chrono::NaiveDateTime) -> bool>> =
+            RefCell::new(Box::new(|_| true));
+    }
+
+    impl MockTz {
+        fn with_validator<R>(f: impl Fn(&chrono::NaiveDateTime) -> bool + 'static, op: impl FnOnce(MockTz) -> R) -> R {
+            MOCK_TZ_VALIDATOR.with(|v| *v.borrow_mut() = Box::new(f));
+            let res = op(MockTz);
+            MOCK_TZ_VALIDATOR.with(|v| *v.borrow_mut() = Box::new(|_| true));
+            res
+        }
+    }
+
+    impl TimeZone for MockTz {
+        type Offset = chrono::FixedOffset;
+
+        fn from_offset(_offset: &Self::Offset) -> Self {
+            MockTz
+        }
+
+        fn offset_from_local_date(&self, _local: &chrono::NaiveDate) -> LocalResult<Self::Offset> {
+            LocalResult::Single(chrono::FixedOffset::east_opt(0).unwrap())
+        }
+
+        fn offset_from_local_datetime(&self, local: &chrono::NaiveDateTime) -> LocalResult<Self::Offset> {
+            let is_valid = MOCK_TZ_VALIDATOR.with(|v| (v.borrow())(local));
+            if is_valid {
+                LocalResult::Single(chrono::FixedOffset::east_opt(0).unwrap())
+            } else {
+                LocalResult::None
+            }
+        }
+
+        fn offset_from_utc_date(&self, _utc: &chrono::NaiveDate) -> Self::Offset {
+            chrono::FixedOffset::east_opt(0).unwrap()
+        }
+
+        fn offset_from_utc_datetime(&self, _utc: &chrono::NaiveDateTime) -> Self::Offset {
+            chrono::FixedOffset::east_opt(0).unwrap()
+        }
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_make_local_datetime_start_of_day_subhour_and_none() {
+        use chrono::Timelike;
+
+        // Sub-hour minute match (e.g., 01:30:00 is valid, 00:00:00 and 01:00:00 are not)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| ndt.hour() == 1 && ndt.minute() == 30 && ndt.second() == 0,
+            |tz| {
+                let dt = make_local_datetime_start_of_day(&tz, 2024, 1, 1);
+                assert!(dt.is_some());
+                let dt = dt.unwrap();
+                assert_eq!(dt.hour(), 1);
+                assert_eq!(dt.minute(), 30);
+            },
+        );
+
+        // Completely invalid day (returns None)
+        MockTz::with_validator(
+            |_ndt: &chrono::NaiveDateTime| false,
+            |tz| {
+                let dt = make_local_datetime_start_of_day(&tz, 2024, 1, 1);
+                assert!(dt.is_none());
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_months_and_days_start_of_day_none() {
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| {
+                ndt.year() == 2024
+                    && ndt.month() == 1
+                    && ndt.day() == 1
+                    && ndt.hour() == 0
+                    && ndt.minute() == 0
+                    && ndt.second() == 0
+            },
+            |tz| {
+                // Month advancement failure (line 272 `?`)
+                let pattern_month = Pattern::parse(PatternType::Months, "2").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+                assert_eq!(pattern_month.next(&mut current), None);
+
+                // Day of month advancement failure (line 280 `?`)
+                let pattern_dom = Pattern::parse(PatternType::Doms, "15").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+                assert_eq!(pattern_dom.next(&mut current), None);
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_hours_dst_gap_max_exceeded() {
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| ndt.hour() < 23,
+            |tz| {
+                let pattern_hour = Pattern::parse(PatternType::Hours, "23").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 22, 0, 0).unwrap();
+                assert_eq!(pattern_hour.next(&mut current), None);
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_minutes_dst_gap_retry_and_exhaustion() {
+        // 1. Retry and succeed (minutes 10..=19 do not exist, minute 20 exists)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && (10..20).contains(&ndt.minute())),
+            |tz| {
+                let pattern_minutes_retry = Pattern::parse(PatternType::Minutes, "10,20").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 5, 0).unwrap();
+                assert_eq!(pattern_minutes_retry.next(&mut current), Some(20));
+
+                // 2. Candidate list exhausted (minute 10 fails, no more candidates)
+                let pattern_minutes_exhausted = Pattern::parse(PatternType::Minutes, "10").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 5, 0).unwrap();
+                assert_eq!(pattern_minutes_exhausted.next(&mut current), None);
+            },
+        );
+
+        // 3. Boundary exceeded (minute 59 does not exist, pattern is "59", next_start = 60 > 59)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && ndt.minute() == 59),
+            |tz| {
+                let pattern_minutes_boundary = Pattern::parse(PatternType::Minutes, "59").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 58, 0).unwrap();
+                assert_eq!(pattern_minutes_boundary.next(&mut current), None);
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_seconds_dst_gap_retry_and_exhaustion() {
+        // 1. Retry and succeed (seconds 10..=19 do not exist, second 20 exists)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && ndt.minute() == 1 && (10..20).contains(&ndt.second())),
+            |tz| {
+                let pattern_seconds_retry = Pattern::parse(PatternType::Seconds, "10,20").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 1, 5).unwrap();
+                assert_eq!(pattern_seconds_retry.next(&mut current), Some(20));
+
+                // 2. Candidate list exhausted (second 10 fails, no more candidates)
+                let pattern_seconds_exhausted = Pattern::parse(PatternType::Seconds, "10").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 1, 5).unwrap();
+                assert_eq!(pattern_seconds_exhausted.next(&mut current), None);
+            },
+        );
+
+        // 3. Boundary exceeded (second 59 does not exist, pattern is "59", next_start = 60 > 59)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && ndt.minute() == 1 && ndt.second() == 59),
+            |tz| {
+                let pattern_seconds_boundary = Pattern::parse(PatternType::Seconds, "59").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 1, 58).unwrap();
+                assert_eq!(pattern_seconds_boundary.next(&mut current), None);
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_item_last_dom_past_end() {
+        use chrono::Utc;
+
+        // In Feb 2023 (28 days), if start is 29, last_dom (28) < start (29), so returns None
+        let pattern = Pattern::parse(PatternType::Doms, "L").unwrap();
+        let current_feb = Utc.with_ymd_and_hms(2023, 2, 1, 0, 0, 0).unwrap();
+        assert_eq!(pattern.next_value(&current_feb, 29, 28), None);
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_item_any_next_value() {
+        use chrono::Utc;
+
+        let pattern = Pattern::parse(PatternType::Doms, "?").unwrap();
+        let mut current = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        assert_eq!(pattern.next(&mut current), None);
+    }
 }
