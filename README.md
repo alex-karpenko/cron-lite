@@ -22,55 +22,6 @@ _This is not a cron job scheduler or runner._ If you need a scheduler/runner, lo
 for [sacs](https://crates.io/crates/sacs) or
 any [other similar crate](https://crates.io/search?q=async%20cron%20scheduler).
 
-## Breaking changes: upgrading to 0.4.0
-
-Version 0.4.0 hardens the public `CronError`/`CronEvent` API and closes a parsing-cost DoS gap. Two changes can
-break code upgrading from any pre-0.4.0 release:
-
-1. **`CronError`'s two-field variants are now named-field structs, not tuples.** `InvalidCronPattern`,
-   `InvalidDigitalValue`, `InvalidMnemonicValue`, `InvalidDayOfWeekValue`, `InvalidRangeValue`, and
-   `InvalidRepeatingPattern` changed from `Variant(String, String)` to `Variant { value: String, field: String }`
-   (or `{ pattern: String, field: String }` for the two pattern-holding variants). This mainly affects code that
-   destructures these variants by position.
-2. **`CronError` and `CronEvent` are now `#[non_exhaustive]`.** Any `match` that doesn't already end with a
-   wildcard arm will fail to compile. This is what lets us add error/event variants in the future without another
-   breaking release — for example, 0.4.0 itself adds `CronError::TooManyPatternValues`, returned when a schedule
-   field's comma-separated list exceeds the number of distinct values that field can legally hold (a guard against
-   parsing/evaluating adversarially large cron strings).
-
-### Migration guide
-
-**If you pattern-match on `CronError`'s two-field variants**, switch from positional to named-field syntax:
-
-```rust
-// before 0.4.0
-match err {
-    CronError::InvalidDigitalValue(value, field) => println!("{field}: {value}"),
-    // ...
-}
-
-// 0.4.0+
-match err {
-    CronError::InvalidDigitalValue { value, field } => println!("{field}: {value}"),
-    // ...
-}
-```
-
-**If you exhaustively `match` on `CronError` or `CronEvent`** (no `_` arm), add one:
-
-```rust
-// 0.4.0+
-match err {
-    CronError::InvalidCronSchedule(_) => { /* ... */ }
-    CronError::InvalidDaysPattern(_) => { /* ... */ }
-    // ... other variants you handle ...
-    _ => { /* handle any other/future variant */ }
-}
-```
-
-**If you handle `Schedule::new` errors generically** (e.g. just via `Display`/`to_string()`), no change is needed —
-only variant *construction* and *exhaustive destructuring* are affected.
-
 ## Cron schedule format
 
 Traditionally, cron schedule expression has a 5-field format: minutes, hours, days, months, and days of the week.
@@ -196,6 +147,68 @@ async fn stream() -> Result<()> {
   `Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementations for `Schedule`.
 * `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
 * `async`: adds several methods to use in async environments. See the module's documentation for details.
+
+## Breaking changes: upgrading to 0.4.0 from the earlier versions
+
+Version 0.4.0 hardens the public `CronError`/`CronEvent` API, eliminates unnecessary heap allocations, and closes a parsing-cost DoS gap:
+
+1. **`CronError`'s two-field variants are now named-field structs, not tuples.** `InvalidCronPattern`,
+   `InvalidDigitalValue`, `InvalidMnemonicValue`, `InvalidDayOfWeekValue`, `InvalidRangeValue`, and
+   `InvalidRepeatingPattern` changed from `Variant(String, String)` to `Variant { value: String, field: String }`
+   (or `{ pattern: String, field: String }` for the two pattern-holding variants). This mainly affects code that
+   destructures these variants by position.
+2. **`CronError` and `CronEvent` are now `#[non_exhaustive]`.** Any `match` that doesn't already end with a
+   wildcard arm will fail to compile. This is what lets us add error/event variants in the future without another
+   breaking release — for example, 0.4.0 itself adds `CronError::TooManyPatternValues`, returned when a schedule
+   field's comma-separated list exceeds the number of distinct values that field can legally hold (a guard against
+   parsing/evaluating adversarially large cron strings).
+3. **`TryFrom<&String>` was removed.** Use `TryFrom<&str>` instead (e.g. `Schedule::try_from(s.as_str())` or `Schedule::try_from(&s[..])`).
+4. **`ScheduleIterator` is now a public concrete type.** `Schedule::iter` and `Schedule::into_iter` return
+   named `ScheduleIterator<Tz>` rather than opaque `impl Iterator<Item = DateTime<Tz>>`, enabling the iterator type to be stored in struct fields.
+5. **`Schedule::new` now accepts `impl AsRef<str>`** instead of `impl Into<String>`, eliminating upfront heap allocation when passing string slices.
+
+### Migration guide
+
+**If you pattern-match on `CronError`'s two-field variants**, switch from positional to named-field syntax:
+
+```rust
+// before 0.4.0
+match err {
+    CronError::InvalidDigitalValue(value, field) => println!("{field}: {value}"),
+    // ...
+}
+
+// 0.4.0+
+match err {
+    CronError::InvalidDigitalValue { value, field } => println!("{field}: {value}"),
+    // ...
+}
+```
+
+**If you exhaustively `match` on `CronError` or `CronEvent`** (no `_` arm), add one:
+
+```rust
+// 0.4.0+
+match err {
+    CronError::InvalidCronSchedule(_) => { /* ... */ }
+    CronError::InvalidDaysPattern(_) => { /* ... */ }
+    // ... other variants you handle ...
+    _ => { /* handle any other/future variant */ }
+}
+```
+
+**If you used `Schedule::try_from(&my_string)` with a borrowed `&String`**, borrow as `&str`:
+
+```rust
+// before 0.4.0
+let schedule = Schedule::try_from(&my_string)?;
+
+// 0.4.0+
+let schedule = Schedule::try_from(my_string.as_str())?;
+```
+
+**If you handle `Schedule::new` errors generically** (e.g. just via `Display`/`to_string()`), no change is needed —
+only variant *construction* and *exhaustive destructuring* are affected.
 
 ## License
 

@@ -85,15 +85,15 @@ pub(crate) fn last_dow(year: PatternValueType, month: PatternValueType, dow: Pat
     last_day
 }
 
-/// Returns the date (day in the month) of the specified N-th day of the week.
+/// Returns the date (day in the month) of the specified N-th day of the week, or `None` if it does not exist in the month.
 pub(crate) fn nth_dow(
     year: PatternValueType,
     month: PatternValueType,
     dow: PatternValueType,
     n: PatternValueType,
-) -> PatternValueType {
+) -> Option<PatternValueType> {
     assert!(
-        !(month == 0 || month > 12 || dow > 6 || n == 0 || n > 4),
+        !(month == 0 || month > 12 || dow > 6 || n == 0 || n > 5),
         "Invalid month, day of week or nth occurrence: {month:02}/{dow}/{n}"
     );
 
@@ -107,12 +107,11 @@ pub(crate) fn nth_dow(
         Ordering::Equal => {}
     }
 
-    assert!(
-        day <= days_in_month(year, month),
-        "Invalid date: {year:04}-{month:02}-{day:02}"
-    );
-
-    day
+    if day > days_in_month(year, month) {
+        None
+    } else {
+        Some(day)
+    }
 }
 
 /// Returns the date of the weekday (not Sunday or Saturday) nearest to the specified date in the same month.
@@ -428,6 +427,10 @@ mod tests {
     #[case(2024, 1, 5, 3, 19)]
     #[case(2024, 1, 6, 3, 20)]
     #[case(2024, 1, 0, 3, 21)]
+    // 5th occurrence cases
+    #[case(2023, 12, 0, 5, 31)] // Fifth Sunday of December 2023
+    #[case(2024, 3, 5, 5, 29)] // Fifth Friday of March 2024
+    #[case(2024, 5, 4, 5, 30)] // Fifth Thursday of May 2024
 
     fn test_nth_dow(
         #[case] y: PatternValueType,
@@ -438,7 +441,7 @@ mod tests {
     ) {
         assert_eq!(
             nth_dow(y, m, dow, n),
-            expected,
+            Some(expected),
             "{}{} {} of {}-{:02} should be {}",
             n,
             match n {
@@ -462,14 +465,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_nth_dow_nonexistent_fifth() {
+        // February 2023 has 28 days - no 5th Sunday
+        assert_eq!(nth_dow(2023, 2, 0, 5), None);
+        // February 2024 has 29 days - 5th Friday doesn't exist
+        assert_eq!(nth_dow(2024, 2, 5, 5), None);
+    }
+
     #[rstest]
     #[case(2023, 0, 0, 1)] // Invalid month 0
     #[case(2023, 13, 0, 1)] // Invalid month 13
     #[case(2023, 1, 7, 1)] // Invalid day of week 7
     #[case(2023, 1, 0, 0)] // Invalid nth 0
-    #[case(2023, 1, 0, 5)] // Invalid nth 5
     #[case(2023, 1, 0, 6)] // Invalid nth 6
-    #[case(2023, 12, 0, 6)] // Fifth Sunday of December 2023 (doesn't exist)
     #[should_panic(expected = "Invalid month, day of week or nth occurrence:")]
     fn test_nth_dow_invalid(
         #[case] y: PatternValueType,

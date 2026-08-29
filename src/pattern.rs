@@ -126,10 +126,16 @@ impl Pattern {
                     Ok(PatternItem::Range(start, end))
                 } else if value.contains('#') && type_ == PatternType::Dows {
                     // Sharp/hash is allowed for day of week only
-                    let mut parts = value.split('#');
-                    let dow = parts.next().unwrap();
-                    let number = parts.next().unwrap();
-                    let number = utils::parse_digital_value(number, 1, 4);
+                    let (dow, number) = match value.split_once('#') {
+                        Some((d, n)) if !n.contains('#') => (d, n),
+                        _ => {
+                            return Err(CronError::InvalidDayOfWeekValue {
+                                value: value.to_owned(),
+                                field: type_.to_string(),
+                            });
+                        }
+                    };
+                    let number = utils::parse_digital_value(number, 1, 5);
                     if number.is_none() {
                         return Err(CronError::InvalidDayOfWeekValue {
                             value: value.to_owned(),
@@ -197,7 +203,7 @@ impl Pattern {
             PatternType::Years => current.year() as PatternValueType,
         };
 
-        let value: Option<PatternValueType> = match &self.pattern {
+        let mut value: Option<PatternValueType> = match &self.pattern {
             PatternItem::List(values) => {
                 // iterate over all elements of the list and determine the minimum
                 // possible valid value if it exists
@@ -286,19 +292,13 @@ impl Pattern {
                     None
                 }
             }
-            PatternItem::Hash(dow, number) => {
-                let day = utils::nth_dow(
-                    current.year() as PatternValueType,
-                    current.month() as PatternValueType,
-                    *dow,
-                    *number,
-                );
-                if day >= current.day() as PatternValueType {
-                    Some(day)
-                } else {
-                    None
-                }
-            }
+            PatternItem::Hash(dow, number) => utils::nth_dow(
+                current.year() as PatternValueType,
+                current.month() as PatternValueType,
+                *dow,
+                *number,
+            )
+            .filter(|&day| day >= current.day() as PatternValueType),
             // theoretically, we shouldn't call this `next` method for indifferent types.
             PatternItem::Any => None,
             PatternItem::Particular(_) | PatternItem::Range(..) => unreachable!(),
@@ -308,14 +308,14 @@ impl Pattern {
         // we have to update all dependent elements to their first valid values,
         // because we leaped over to the next day/hour/minute/...
         // and should start from the beginning
-        if let Some(value) = value {
-            if value > start {
+        if let Some(current_val) = value {
+            if current_val > start {
                 match self.type_ {
                     PatternType::Years => {
                         *current = current
                             .with_day(1)?
                             .with_month(1)?
-                            .with_year(i32::from(value))?
+                            .with_year(i32::from(current_val))?
                             .with_hour(0)?
                             .with_minute(0)?
                             .with_second(0)?;
@@ -323,26 +323,91 @@ impl Pattern {
                     PatternType::Months => {
                         *current = current
                             .with_day(1)?
-                            .with_month(u32::from(value))?
+                            .with_month(u32::from(current_val))?
                             .with_hour(0)?
                             .with_minute(0)?
                             .with_second(0)?;
                     }
                     PatternType::Doms | PatternType::Dows => {
                         *current = current
-                            .with_day(u32::from(value))?
+                            .with_day(u32::from(current_val))?
                             .with_hour(0)?
                             .with_minute(0)?
                             .with_second(0)?;
                     }
                     PatternType::Hours => {
-                        *current = current.with_hour(u32::from(value))?.with_minute(0)?.with_second(0)?;
+                        let mut candidate = Some(current_val);
+                        loop {
+                            if let Some(h) = candidate {
+                                if let Some(updated) = current.with_hour(u32::from(h)) {
+                                    *current = updated.with_minute(0)?.with_second(0)?;
+                                    value = Some(h);
+                                    break;
+                                }
+                                // Hour `h` does not exist in local time (DST spring gap).
+                                // Try the next matching hour in this day.
+                                let next_start = h + 1;
+                                if next_start > max {
+                                    value = None;
+                                    break;
+                                }
+                                candidate = match &self.pattern {
+                                    PatternItem::All => Some(next_start),
+                                    PatternItem::Particular(val) => {
+                                        if *val >= next_start && *val <= max {
+                                            Some(*val)
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    PatternItem::Range(begin, end) => SeriesWithStep::new(*begin, *end, 1, *begin)
+                                        .find(|v| *v >= next_start && *v <= max),
+                                    PatternItem::RepeatingValue(range_start, step) => {
+                                        SeriesWithStep::new(*range_start, max, *step, *range_start)
+                                            .find(|v| *v >= next_start)
+                                    }
+                                    PatternItem::RepeatingRange(min, max, step) => {
+                                        SeriesWithStep::new(*min, *max, *step, *min).find(|v| *v >= next_start)
+                                    }
+                                    PatternItem::List(values) => {
+                                        let mut min_val: Option<PatternValueType> = None;
+                                        for p in values {
+                                            let item = Self {
+                                                type_: self.type_,
+                                                pattern: p.clone(),
+                                            };
+                                            let mut c = current.clone();
+                                            if let Some(n) = item.next(&mut c) {
+                                                if n >= next_start {
+                                                    if let Some(prev) = min_val {
+                                                        if n < prev {
+                                                            min_val = Some(n);
+                                                        }
+                                                    } else {
+                                                        min_val = Some(n);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        min_val
+                                    }
+                                    PatternItem::Any
+                                    | PatternItem::LastDow(_)
+                                    | PatternItem::LastDom
+                                    | PatternItem::Weekday(_)
+                                    | PatternItem::Hash(..) => None,
+                                };
+                            } else {
+                                value = None;
+                                break;
+                            }
+                        }
                     }
                     PatternType::Minutes => {
-                        *current = current.with_minute(u32::from(value))?.with_second(0)?;
+                        *current = current.with_minute(u32::from(current_val))?.with_second(0)?;
                     }
                     PatternType::Seconds => {
-                        *current = current.with_second(u32::from(value))?;
+                        *current = current.with_second(u32::from(current_val))?;
                     }
                 }
             }
@@ -599,6 +664,8 @@ mod tests {
             ("fri", PatternItem::Particular(5)),
             ("sun#1", PatternItem::Hash(0, 1)),
             ("3#2", PatternItem::Hash(3, 2)),
+            ("3#5", PatternItem::Hash(3, 5)),
+            ("fri#5", PatternItem::Hash(5, 5)),
             ("4L", PatternItem::LastDow(4)),
             (
                 "3,1",
@@ -776,7 +843,7 @@ mod tests {
     #[case(PatternType::Hours,   vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/24", "24", "0/1"])]
     #[case(PatternType::Doms,    vec!["2-2/2", "5-1/2", "?,4", "*,1", "1-1", "5-1", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/31", "32", "0/1", "0"])]
     #[case(PatternType::Months,  vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/12", "32", "0/1", "0"])]
-    #[case(PatternType::Dows,    vec!["?, 3", "*,1", "1-1", "5-1", "W", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/2", "7"])]
+    #[case(PatternType::Dows,    vec!["?, 3", "*,1", "1-1", "5-1", "W", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#6", "1#2#3", "0/-5", "0/0", "0/2", "7"])]
     #[case(PatternType::Years,   vec!["1972-1972/2", "2005-2001/2", "*,1", "2001-2001", "2005-2001", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/2", "1969", "2100", "2000/2100"])]
     fn test_pattern_item_parse_invalid(#[case] type_: PatternType, #[case] input: Vec<&str>) {
         for item in input {

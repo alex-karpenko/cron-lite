@@ -67,9 +67,9 @@ impl Schedule {
     ///
     /// # Errors
     /// Returns [`CronError`] if the provided pattern is unparsable or has format errors.
-    pub fn new(pattern: impl Into<String>) -> Result<Self> {
-        let pattern = pattern.into();
-        let mut elements: Vec<&str> = pattern.split_whitespace().collect();
+    pub fn new(pattern: impl AsRef<str>) -> Result<Self> {
+        let pattern_str = pattern.as_ref();
+        let mut elements: Vec<&str> = pattern_str.split_whitespace().collect();
         #[cfg(feature = "tz")]
         let mut tz = None;
 
@@ -97,7 +97,7 @@ impl Schedule {
                 "@weekly" => elements = vec!["0", "0", "0", "?", "*", "0", "*"],
                 "@daily" | "@midnight" => elements = vec!["0", "0", "0", "*", "*", "*", "*"],
                 "@hourly" => elements = vec!["0", "0", "*", "*", "*", "*", "*"],
-                _ => return Err(CronError::InvalidCronSchedule(pattern)),
+                _ => return Err(CronError::InvalidCronSchedule(pattern_str.to_owned())),
             }
         } else if elements.len() == 5 {
             elements.insert(0, "0");
@@ -105,7 +105,7 @@ impl Schedule {
         } else if elements.len() == 6 {
             elements.insert(6, "*");
         } else if elements.len() != 7 {
-            return Err(CronError::InvalidCronSchedule(pattern));
+            return Err(CronError::InvalidCronSchedule(pattern_str.to_owned()));
         }
 
         // Parse each element.
@@ -123,7 +123,7 @@ impl Schedule {
 
         // Validate DOM and DOW relationship.
         if DomDowRelation::classify(schedule.dom.pattern(), schedule.dow.pattern()) == DomDowRelation::Invalid {
-            return Err(CronError::InvalidDaysPattern(pattern));
+            return Err(CronError::InvalidDaysPattern(pattern_str.to_owned()));
         }
 
         Ok(schedule)
@@ -289,7 +289,7 @@ impl Schedule {
 
     /// Returns an iterator of events starting from `current` (inclusively).
     #[inline]
-    pub fn iter<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
+    pub fn iter<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> ScheduleIterator<Tz> {
         ScheduleIterator {
             schedule: self.clone(),
             next: self.upcoming(current),
@@ -298,7 +298,7 @@ impl Schedule {
 
     /// Consumes the [`Schedule`] and returns an iterator of events starting from `current` (inclusively).
     #[inline]
-    pub fn into_iter<Tz: TimeZone>(self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
+    pub fn into_iter<Tz: TimeZone>(self, current: &DateTime<Tz>) -> ScheduleIterator<Tz> {
         let next = self.upcoming(current);
         ScheduleIterator { schedule: self, next }
     }
@@ -306,7 +306,7 @@ impl Schedule {
 
 /// Contains the iterator state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ScheduleIterator<Tz: TimeZone> {
+pub struct ScheduleIterator<Tz: TimeZone> {
     pub(crate) schedule: Schedule,
     pub(crate) next: Option<DateTime<Tz>>,
 }
@@ -339,14 +339,6 @@ impl TryFrom<String> for Schedule {
     type Error = CronError;
 
     fn try_from(value: String) -> Result<Self> {
-        Self::new(value)
-    }
-}
-
-impl TryFrom<&String> for Schedule {
-    type Error = CronError;
-
-    fn try_from(value: &String) -> Result<Self> {
         Self::new(value)
     }
 }
@@ -613,6 +605,8 @@ mod tests {
     #[case("0 0 9 * * 1", "2024-01-01T09:00:01Z", "2024-01-08T09:00:00+00:00")]
     #[case("0 0 9 * * 1#1", "2024-04-12T00:00:00Z", "2024-05-06T09:00:00+00:00")]
     #[case("0 0 9 * * 6#4", "2024-11-30T09:00:00Z", "2024-12-28T09:00:00+00:00")]
+    #[case("0 0 9 * * 5#5", "2024-03-01T00:00:00Z", "2024-03-29T09:00:00+00:00")]
+    #[case("0 0 9 * * 5#5", "2024-03-29T09:00:01Z", "2024-05-31T09:00:00+00:00")]
     #[case("0 0 9-17 * * 1-5", "2024-01-01T08:00:00Z", "2024-01-01T09:00:00+00:00")]
     #[case("0 0 9-17 * * 1-5", "2024-01-01T17:00:01Z", "2024-01-02T09:00:00+00:00")]
     #[case("0 15,45 9-17 * * 1-5", "2024-01-01T09:00:00Z", "2024-01-01T09:15:00+00:00")]
@@ -986,9 +980,9 @@ mod tests {
         let schedule2 = Schedule::try_from(input).unwrap();
         assert_eq!(schedule1, schedule2);
 
-        // &String
+        // &str via String.as_str()
         let tst_string = String::from(input);
-        let schedule2 = Schedule::try_from(&tst_string).unwrap();
+        let schedule2 = Schedule::try_from(tst_string.as_str()).unwrap();
         assert_eq!(schedule1, schedule2);
 
         // String
@@ -1238,9 +1232,9 @@ mod tests {
             let schedule2 = Schedule::try_from(input).unwrap();
             assert_eq!(schedule1, schedule2);
 
-            // &String
+            // &str via String.as_str()
             let tst_string = String::from(input);
-            let schedule2 = Schedule::try_from(&tst_string).unwrap();
+            let schedule2 = Schedule::try_from(tst_string.as_str()).unwrap();
             assert_eq!(schedule1, schedule2);
 
             // String
@@ -1289,6 +1283,7 @@ mod tests {
         #[case("TZ=EET @hourly", "2000-10-29T00:00:01Z", "2000-10-29T02:00:00+00:00")] // 9
         #[case("TZ=EET @hourly", "2000-10-29T01:00:01Z", "2000-10-29T02:00:00+00:00")] // 10
         #[case("TZ=EET @hourly", "2000-10-29T02:00:01Z", "2000-10-29T03:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3-5 * * *", "2025-03-30T00:00:00Z", "2025-03-30T01:00:00+00:00")]
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
             let schedule = Schedule::new(pattern).unwrap();

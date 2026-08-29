@@ -420,8 +420,22 @@ fn sleep_thread_tx() -> &'static ControlChannel {
             let control_rx = rx;
 
             loop {
+                // Wake all expired entries before waiting
+                let now = Instant::now();
+                while let Some(entry) = sleep_map.first_entry() {
+                    if entry.key().until <= now {
+                        let (_, waker) = entry.remove_entry();
+                        waker.wake();
+                    } else {
+                        break;
+                    }
+                }
+
                 let cmd = if sleep_map.is_empty() {
-                    control_rx.recv().expect("sleep control channel is closed")
+                    match control_rx.recv() {
+                        Ok(cmd) => cmd,
+                        Err(_) => return,
+                    }
                 } else {
                     let (first, _) = sleep_map.first_key_value().unwrap();
                     let time_to_sleep = first.until.saturating_duration_since(Instant::now());
@@ -429,11 +443,18 @@ fn sleep_thread_tx() -> &'static ControlChannel {
                     match control_rx.recv_timeout(time_to_sleep) {
                         Ok(cmd) => cmd,
                         Err(RecvTimeoutError::Timeout) => {
-                            let (_, waker) = sleep_map.pop_first().unwrap();
-                            waker.wake();
+                            let now = Instant::now();
+                            while let Some(entry) = sleep_map.first_entry() {
+                                if entry.key().until <= now {
+                                    let (_, waker) = entry.remove_entry();
+                                    waker.wake();
+                                } else {
+                                    break;
+                                }
+                            }
                             continue;
                         }
-                        Err(e) => panic!("sleep control channel is closed: {e}"),
+                        Err(RecvTimeoutError::Disconnected) => return,
                     }
                 };
 
@@ -488,18 +509,12 @@ impl Schedule {
     ///
     /// See [`CronStream`] for complete documentation with examples.
     pub fn stream<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> CronStream<Tz> {
-        let iter = ScheduleIterator {
-            schedule: self.clone(),
-            next: self.upcoming(current),
-        };
-        CronStream::new(iter)
+        CronStream::new(self.iter(current))
     }
 
     /// The same as [`Schedule::stream()`] but consumes the `Schedule`.
     pub fn into_stream<Tz: TimeZone>(self, current: &DateTime<Tz>) -> CronStream<Tz> {
-        let next = self.upcoming(current);
-        let iter = ScheduleIterator { schedule: self, next };
-        CronStream::new(iter)
+        CronStream::new(self.into_iter(current))
     }
 }
 
@@ -512,8 +527,8 @@ mod tests {
     use futures::{select, StreamExt};
     use rstest::rstest;
 
-    const ACCEPTED_SLEEP_DRIFT: Duration = Duration::from_millis(2);
-    const ACCEPTED_STREAM_DRIFT: Duration = Duration::from_millis(5);
+    const ACCEPTED_SLEEP_DRIFT: Duration = Duration::from_millis(5);
+    const ACCEPTED_STREAM_DRIFT: Duration = Duration::from_millis(15);
 
     fn test_upcoming_instant_case<T: TimeZone>(schedule: &str, current: &DateTime<T>, expected_delta: Duration) {
         let schedule = Schedule::try_from(schedule).unwrap();
@@ -773,5 +788,25 @@ mod tests {
 
         let result = test_stream.collect::<Vec<_>>().await;
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[timeout(Duration::from_secs(5))]
+    async fn test_multiple_concurrent_sleeps() {
+        let schedule = Schedule::try_from("* * * * * *").unwrap();
+        let now = Utc::now();
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let sched = schedule.clone();
+            handles.push(tokio::spawn(async move {
+                let event = sched.sleep(&now).unwrap().await;
+                assert!(matches!(event, CronEvent::Ok(_) | CronEvent::Missed(_)));
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
     }
 }

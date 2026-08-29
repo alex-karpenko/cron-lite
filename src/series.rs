@@ -1,41 +1,46 @@
 /// Generator of a series of numbers.
-use std::ops::{Add, AddAssign};
+use std::ops::{Add, Sub};
 
 /// Generator (iterator) state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SeriesWithStep<T: Copy> {
     max: T,
     step: T,
-    next: T,
+    next: Option<T>,
 }
 
 impl<T> SeriesWithStep<T>
 where
-    T: Copy + Add + AddAssign + PartialOrd,
-    <T as Add>::Output: PartialOrd<T>,
+    T: Copy + Add<Output = T> + Sub<Output = T> + PartialOrd,
 {
-    /// The caller is responsible for ensuring that
-    /// the maximum serial value (max+step) isn't greater than the type's maximum.
+    /// Constructs a new series generator.
     ///
-    /// Panics if one of the parameters is out of bounds.
+    /// Panics if `max < min`, `start` is out of bounds, or `step` is 0.
     #[inline]
+    #[allow(clippy::eq_op)]
     pub(crate) fn new(min: T, max: T, step: T, start: T) -> Self {
         assert!(max >= min, "max value is less than min value");
         assert!(
             !(start < min || start > max),
             "start value is less than min or greater than max"
         );
-        assert!(min + step != min, "step value is 0");
+        let zero = step - step;
+        assert!(step > zero, "step value is 0");
 
         let next = if start == min {
             min
         } else {
             let mut next = min;
             while next < start {
-                next += step;
+                if max - next < step {
+                    break;
+                }
+                next = next + step;
             }
             next
         };
+
+        let next = if next >= start && next <= max { Some(next) } else { None };
 
         Self { max, step, next }
     }
@@ -43,19 +48,19 @@ where
 
 impl<T> Iterator for SeriesWithStep<T>
 where
-    T: Copy + Add + AddAssign + PartialOrd,
+    T: Copy + Add<Output = T> + Sub<Output = T> + PartialOrd,
 {
     type Item = T;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.next > self.max {
-            None
+        let current = self.next?;
+        if self.max - current < self.step {
+            self.next = None;
         } else {
-            let current = self.next;
-            self.next += self.step;
-            Some(current)
+            self.next = Some(current + self.step);
         }
+        Some(current)
     }
 }
 
@@ -132,14 +137,18 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "attempt to add with overflow")]
-    fn series_should_panic_by_overflow_u8() {
-        SeriesWithStep::<u8>::new(254, 255, 2, 254);
+    fn series_boundary_no_overflow_u8() {
+        assert_eq!(
+            SeriesWithStep::<u8>::new(254, 255, 2, 254).collect::<Vec<_>>(),
+            vec![254]
+        );
     }
 
     #[test]
-    #[should_panic(expected = "attempt to add with overflow")]
-    fn series_should_panic_by_overflow_u16() {
-        SeriesWithStep::<u16>::new(65534, 65535, 2, 65534);
+    fn series_boundary_no_overflow_u16() {
+        assert_eq!(
+            SeriesWithStep::<u16>::new(65534, 65535, 2, 65534).collect::<Vec<_>>(),
+            vec![65534]
+        );
     }
 }
