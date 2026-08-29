@@ -73,7 +73,8 @@ enum ControlCmd {
 /// When awaited, it returns an instance of [`CronEvent`],
 /// which represents the kind and time of the event that happened.
 ///
-/// May panic if the background thread (which controls all sleep and stream events) fails.
+/// If the background thread (which controls all sleep and stream events) is unavailable,
+/// the future resolves gracefully (as [`CronEvent::Missed`]) instead of panicking.
 /// On first use of any asynchronous method (`sleep`, `stream`, `into_stream`), a single
 /// dedicated background OS thread is spawned to manage wakeups and runs for the lifetime
 /// of the process.
@@ -131,9 +132,15 @@ impl<Tz: TimeZone> CronSleep<Tz> {
         }
     }
 
+    /// Attempts to send a command to the sleep-manager thread.
+    ///
+    /// Returns `true` on success, or `false` when the manager thread is gone
+    /// (channel disconnected). Callers use this to fail gracefully instead of
+    /// panicking on the executor thread.
     #[inline]
-    fn send_cmd(&self, cmd: ControlCmd) {
-        self.tx.send(cmd).expect("sleep control channel is closed");
+    #[must_use]
+    fn send_cmd(&self, cmd: ControlCmd) -> bool {
+        self.tx.send(cmd).is_ok()
     }
 
     #[inline]
@@ -160,27 +167,38 @@ impl<Tz: TimeZone> Future for CronSleep<Tz> {
                     // If not missed - push it to the sleep thread
                     let waker = cx.waker().clone();
                     let key = SleepQueueKey::new(self.until);
-                    self.send_cmd(ControlCmd::Insert {
+                    if !self.send_cmd(ControlCmd::Insert {
                         key: key.clone(),
                         waker,
-                    });
-                    self.state = SleepState::Waiting(key);
-                    Poll::Pending
+                    }) {
+                        // The sleep-manager thread is gone: no wake-up can ever arrive.
+                        // Resolve as missed instead of leaving the future pending forever.
+                        self.finish(CronEvent::Missed(next))
+                    } else {
+                        self.state = SleepState::Waiting(key);
+                        Poll::Pending
+                    }
                 }
             }
             SleepState::Waiting(key) => {
                 // Already running in the sleep thread
                 if now_inst >= self.until {
-                    // And finished in time
-                    self.send_cmd(ControlCmd::Remove { key: key.clone() });
+                    // And finished in time. The Remove is best-effort; the event is due
+                    // regardless of whether the manager thread is reachable.
+                    let _ = self.send_cmd(ControlCmd::Remove { key: key.clone() });
                     self.finish(CronEvent::Ok(next))
                 } else {
                     // Or not finished yet, so refresh the Waker instance in the sleep thread
-                    self.send_cmd(ControlCmd::Insert {
+                    if !self.send_cmd(ControlCmd::Insert {
                         key: key.clone(),
                         waker: cx.waker().clone(),
-                    });
-                    Poll::Pending
+                    }) {
+                        // Can't re-arm: the manager thread is gone, so the event cannot be
+                        // delivered on time. Resolve as missed to avoid a stuck future.
+                        self.finish(CronEvent::Missed(next))
+                    } else {
+                        Poll::Pending
+                    }
                 }
             }
             // If already completed, return the recorded event.
@@ -221,7 +239,8 @@ impl<Tz: TimeZone> PinnedDrop for CronSleep<Tz> {
 /// You can configure the stream to skip missed events using the [`CronStream::with_skip_missed()`] method.
 /// The default configuration is to return all kinds of events.
 ///
-/// May panic if the background thread (which controls all sleep and stream events) fails.
+/// If the background thread (which controls all sleep and stream events) is unavailable,
+/// the stream ends gracefully (the next poll returns `None`) instead of panicking.
 /// On first use of any asynchronous method (`sleep`, `stream`, `into_stream`), a single
 /// dedicated background OS thread is spawned to manage wakeups and runs for the lifetime
 /// of the process.
@@ -275,9 +294,15 @@ impl<Tz: TimeZone> CronStream<Tz> {
         }
     }
 
+    /// Attempts to send a command to the sleep-manager thread.
+    ///
+    /// Returns `true` on success, or `false` when the manager thread is gone
+    /// (channel disconnected). Callers use this to fail gracefully instead of
+    /// panicking on the executor thread.
     #[inline]
-    fn send_cmd(&self, cmd: ControlCmd) {
-        self.tx.send(cmd).expect("sleep control channel is closed");
+    #[must_use]
+    fn send_cmd(&self, cmd: ControlCmd) -> bool {
+        self.tx.send(cmd).is_ok()
     }
 
     /// Defines how to process missed events in the stream:
@@ -340,10 +365,15 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
                         if let Some(until) = next_instant(now_nanos, &next) {
                             // And it's not a past (missed) event, then push it to the sleep thread
                             let key = SleepQueueKey::new(until);
-                            self.send_cmd(ControlCmd::Insert {
+                            if !self.send_cmd(ControlCmd::Insert {
                                 key: key.clone(),
                                 waker: cx.waker().clone(),
-                            });
+                            }) {
+                                // The sleep-manager thread is gone: no further events can be
+                                // scheduled, so finish the stream gracefully.
+                                self.state = StreamState::Completed;
+                                return Poll::Ready(None);
+                            }
                             self.state = StreamState::Waiting { key, next };
                             return Poll::Pending;
                         } else if self.skip_missed {
@@ -361,14 +391,21 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
             StreamState::Waiting { key, next } => {
                 if key.until > now_inst {
                     // Still waiting, so refresh Waker
-                    self.send_cmd(ControlCmd::Insert {
+                    if !self.send_cmd(ControlCmd::Insert {
                         key: key.clone(),
                         waker: cx.waker().clone(),
-                    });
-                    Poll::Pending
+                    }) {
+                        // The sleep-manager thread is gone: no further events can be
+                        // delivered, so finish the stream gracefully.
+                        self.state = StreamState::Completed;
+                        Poll::Ready(None)
+                    } else {
+                        Poll::Pending
+                    }
                 } else {
-                    // The expected time of this particular event has arrived
-                    self.send_cmd(ControlCmd::Remove { key: key.clone() });
+                    // The expected time of this particular event has arrived. The Remove is
+                    // best-effort; the event is due regardless.
+                    let _ = self.send_cmd(ControlCmd::Remove { key: key.clone() });
                     let next = next.clone();
                     self.state = StreamState::Idle;
                     Poll::Ready(Some(CronEvent::Ok(next)))
@@ -389,13 +426,12 @@ impl<Tz: TimeZone> FusedStream for CronStream<Tz> {
 
 #[pinned_drop]
 impl<Tz: TimeZone> PinnedDrop for CronStream<Tz> {
-    fn drop(mut self: Pin<&mut Self>) {
+    fn drop(self: Pin<&mut Self>) {
         if let StreamState::Waiting { key, .. } = &self.state {
             // Best-effort cleanup: if the sleep-manager thread is already gone, there's
             // nothing left to notify and nothing to gain by panicking during a drop.
             let _ = self.tx.send(ControlCmd::Remove { key: key.clone() });
         }
-        self.state = StreamState::Completed;
     }
 }
 
