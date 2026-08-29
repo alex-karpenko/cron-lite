@@ -786,6 +786,39 @@ mod tests {
     }
 
     #[rstest]
+    #[case(PatternType::Seconds, 60)]
+    #[case(PatternType::Minutes, 60)]
+    #[case(PatternType::Hours, 24)]
+    #[case(PatternType::Doms, 31)]
+    #[case(PatternType::Months, 12)]
+    #[case(PatternType::Dows, 7)]
+    #[case(PatternType::Years, 130)]
+    fn test_pattern_item_parse_list_size_limit(#[case] type_: PatternType, #[case] max_items: usize) {
+        let valid_value = if type_ == PatternType::Years {
+            MIN_YEAR_STR.to_owned()
+        } else {
+            type_.min_max().0.to_string()
+        };
+
+        let at_limit = vec![valid_value.as_str(); max_items].join(",");
+        assert!(
+            Pattern::parse(type_, &at_limit).is_ok(),
+            "type = {type_:?}, count = {max_items} should be accepted"
+        );
+
+        let over_limit = vec![valid_value.as_str(); max_items + 1].join(",");
+        assert!(
+            matches!(
+                Pattern::parse(type_, &over_limit),
+                Err(CronError::TooManyPatternValues { field, max })
+                    if field == type_.to_string() && max == max_items
+            ),
+            "type = {type_:?}, count = {} should be rejected",
+            max_items + 1
+        );
+    }
+
+    #[rstest]
     #[case(PatternType::Seconds, "0", 0)]
     #[case(PatternType::Seconds, "33", 33)]
     #[case(PatternType::Seconds, "59", 59)]
