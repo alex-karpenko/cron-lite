@@ -8,16 +8,7 @@ pub(crate) fn parse_digital_value(
     min: PatternValueType,
     max: PatternValueType,
 ) -> Option<PatternValueType> {
-    let value = input.parse::<u16>();
-    if let Ok(value) = value {
-        if value < min || value > max {
-            None
-        } else {
-            Some(value)
-        }
-    } else {
-        None
-    }
+    input.parse::<u16>().ok().filter(|&v| (min..=max).contains(&v))
 }
 
 /// Converts a string with a mnemonic value representation into an unsigned number.
@@ -27,7 +18,7 @@ pub(crate) fn parse_string_value(input: &str, values: &[&str]) -> Option<Pattern
     } else {
         values
             .iter()
-            .position(|&x| x.to_uppercase() == input.to_uppercase())
+            .position(|&x| x.eq_ignore_ascii_case(input))
             .map(|i| i as PatternValueType)
     }
 }
@@ -227,6 +218,13 @@ mod tests {
     fn parse_string_value_empty_array() {
         let empty_array: &[&str] = &[];
         assert_eq!(parse_string_value("test", empty_array), None);
+    }
+
+    #[test]
+    fn parse_string_value_non_ascii() {
+        let array = &["jan", "feb", "mar"];
+        assert_eq!(parse_string_value("j\u{00e4}n", array), None);
+        assert_eq!(parse_string_value("JAN", array), Some(0));
     }
 
     #[test]

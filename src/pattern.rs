@@ -38,15 +38,14 @@ impl Pattern {
         // bound the cost of handling adversarially large input.
         let (min, max) = type_.min_max();
         let max_items = (max - min + 1) as usize;
-        if input.split(',').count() > max_items {
+        if input.split(',').nth(max_items).is_some() {
             return Err(CronError::TooManyPatternValues {
                 field: type_.to_string(),
                 max: max_items,
             });
         }
 
-        let mut error_indicator = Ok(());
-        let mut splitted = input
+        let mut splitted: Vec<PatternItem> = input
             .split(',')
             .map(|value| {
                 if value == "*" {
@@ -148,20 +147,7 @@ impl Pattern {
                     Ok(PatternItem::Particular(type_.parse(value)?))
                 }
             })
-            // we use this to detect that at least one element of the list has an error, so
-            // the whole pattern should be invalidated
-            .scan(&mut error_indicator, |err, res| match res {
-                Ok(o) => Some(o),
-                Err(e) => {
-                    **err = Err(e);
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // we use this to detect that at least one element of the list has an error, so
-        // the whole pattern should be invalidated
-        error_indicator?;
+            .collect::<Result<Vec<_>, _>>()?;
 
         // sanity checks
         if splitted.is_empty()
@@ -278,15 +264,21 @@ impl Pattern {
         start: PatternValueType,
         max: PatternValueType,
     ) -> Option<PatternValueType> {
-        match &self.pattern {
+        self.next_value_for_item(&self.pattern, current, start, max)
+    }
+
+    fn next_value_for_item<Tz: TimeZone>(
+        &self,
+        item: &PatternItem,
+        current: &DateTime<Tz>,
+        start: PatternValueType,
+        max: PatternValueType,
+    ) -> Option<PatternValueType> {
+        match item {
             PatternItem::List(values) => {
                 let mut min: Option<PatternValueType> = None;
                 for pattern in values {
-                    let item = Self {
-                        type_: self.type_,
-                        pattern: pattern.clone(),
-                    };
-                    if let Some(next) = item.next_value(current, start, max) {
+                    if let Some(next) = self.next_value_for_item(pattern, current, start, max) {
                         if let Some(prev) = min {
                             if next < prev {
                                 min = Some(next);
@@ -438,14 +430,14 @@ impl PatternType {
     fn parse(self, input: &str) -> Result<PatternValueType> {
         // determine valid ranges
         let (min, max) = self.min_max();
-        let (variants, starter_shift) = match self {
+        let (variants, starter_shift): (&[&str], PatternValueType) = match self {
             PatternType::Seconds
             | PatternType::Minutes
             | PatternType::Hours
             | PatternType::Doms
-            | PatternType::Years => (vec![], 0),
-            PatternType::Months => (Self::MONTHS.to_vec(), 1),
-            PatternType::Dows => (Self::DAYS_OF_WEEK.to_vec(), 0),
+            | PatternType::Years => (&[], 0),
+            PatternType::Months => (&Self::MONTHS, 1),
+            PatternType::Dows => (&Self::DAYS_OF_WEEK, 0),
         };
 
         // and convert string to the unsigned integer
@@ -467,7 +459,7 @@ impl PatternType {
             PatternType::Months | PatternType::Dows => {
                 if let Some(value) = utils::parse_digital_value(input, min, max) {
                     Ok(value)
-                } else if let Some(value) = utils::parse_string_value(input, &variants) {
+                } else if let Some(value) = utils::parse_string_value(input, variants) {
                     Ok(value + starter_shift)
                 } else {
                     Err(CronError::InvalidMnemonicValue {
@@ -846,6 +838,15 @@ mod tests {
             "type = {type_:?}, count = {} should be rejected",
             max_items + 1
         );
+    }
+
+    #[test]
+    fn test_pattern_item_parse_large_list_rejected() {
+        let massive_input = vec!["0"; 10_000].join(",");
+        assert!(matches!(
+            Pattern::parse(PatternType::Seconds, &massive_input),
+            Err(CronError::TooManyPatternValues { field, max: 60 }) if field == "seconds"
+        ));
     }
 
     #[rstest]

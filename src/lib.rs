@@ -37,7 +37,7 @@
 //! - `,` - list of values or patterns, i.e. `1,7,12`, `SUN,FRI`;
 //! - `-` - range of values, i.e. `0-15`, `JAN-MAR`;
 //! - `/` - repeating values, i.e. `*/12`, `10/5`, `30-59/2`;
-//! - `L` - last day of the month (for month field), or last particular day of the week (for weekday field), i.e. `L` or `5L`;
+//! - `L` - last day of the month (for day of month field), or last particular day of the week (for weekday field), i.e. `L` or `5L`;
 //! - `W` - the weekday (not Sunday or Saturday), nearest to the specified days of month in the same month, i.e. `22W`;
 //! - `#` - specific day of the week, i.e. `fri#1`, `1#4`;
 //! - `?` - for days of month or week means that the value doesn't matter: if day of month is specified (not `*`),

@@ -419,8 +419,7 @@ fn sleep_thread_tx() -> &'static ControlChannel {
             let mut sleep_map: BTreeMap<SleepQueueKey, Waker> = BTreeMap::new();
             let control_rx = rx;
 
-            loop {
-                // Wake all expired entries before waiting
+            let wake_expired = |sleep_map: &mut BTreeMap<SleepQueueKey, Waker>| {
                 let now = Instant::now();
                 while let Some(entry) = sleep_map.first_entry() {
                     if entry.key().until <= now {
@@ -430,6 +429,11 @@ fn sleep_thread_tx() -> &'static ControlChannel {
                         break;
                     }
                 }
+            };
+
+            loop {
+                // Wake all expired entries before waiting
+                wake_expired(&mut sleep_map);
 
                 let cmd = if sleep_map.is_empty() {
                     match control_rx.recv() {
@@ -443,15 +447,7 @@ fn sleep_thread_tx() -> &'static ControlChannel {
                     match control_rx.recv_timeout(time_to_sleep) {
                         Ok(cmd) => cmd,
                         Err(RecvTimeoutError::Timeout) => {
-                            let now = Instant::now();
-                            while let Some(entry) = sleep_map.first_entry() {
-                                if entry.key().until <= now {
-                                    let (_, waker) = entry.remove_entry();
-                                    waker.wake();
-                                } else {
-                                    break;
-                                }
-                            }
+                            wake_expired(&mut sleep_map);
                             continue;
                         }
                         Err(RecvTimeoutError::Disconnected) => return,
@@ -482,7 +478,7 @@ fn next_instant<Tz: TimeZone>(now_nanos: i64, next: &DateTime<Tz>) -> Option<Ins
     if delta < 0 {
         None
     } else {
-        Some(now_inst + Duration::from_nanos(delta as u64))
+        now_inst.checked_add(Duration::from_nanos(delta as u64))
     }
 }
 
@@ -555,6 +551,17 @@ mod tests {
         let next = Utc::now();
         let instant = next_instant(now, &next);
         assert!(instant.is_none(), "instant={instant:?}");
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
+    fn test_next_instant_future() {
+        let now = Utc::now().timestamp_nanos_opt().unwrap();
+        let next = Utc::now() + Duration::from_secs(5);
+        let instant = next_instant(now, &next);
+        assert!(instant.is_some());
+        let delta = instant.unwrap().saturating_duration_since(Instant::now());
+        assert!(delta <= Duration::from_secs(5) + Duration::from_millis(50));
     }
 
     #[rstest]
@@ -725,7 +732,7 @@ mod tests {
     #[tokio::test]
     #[rstest]
     #[timeout(Duration::from_secs(3))]
-    async fn test_streem_is_terminated() {
+    async fn test_stream_is_terminated() {
         let schedule = Schedule::try_from("0 0 0 1 1 * 2024").unwrap();
         let now = Utc.with_ymd_and_hms(2023, 12, 31, 23, 23, 23).unwrap();
         let mut test_stream = schedule.stream(&now);
@@ -744,7 +751,7 @@ mod tests {
     #[tokio::test]
     #[rstest]
     #[timeout(Duration::from_secs(7))]
-    async fn test_streem_take() {
+    async fn test_stream_take() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
         let now = Utc::now();
 
