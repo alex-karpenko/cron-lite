@@ -42,7 +42,7 @@ where
             next
         };
 
-        let next = if next >= start && next <= max { Some(next) } else { None };
+        let next = (start..=max).contains(&next).then_some(next);
 
         Self { max, step, next }
     }

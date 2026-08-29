@@ -76,14 +76,14 @@ impl Schedule {
         // Parse and define TZ, if present
         #[cfg(feature = "tz")]
         if elements.len() >= 2 {
-            let tz_elements: Vec<&str> = elements[0].split('=').collect();
-            if tz_elements.len() == 2 && tz_elements[0].to_uppercase() == "TZ" {
-                let tz_str = tz_elements[1];
-                if let Ok(tz_value) = Tz::from_str(tz_str) {
-                    tz = Some(tz_value);
-                    elements.remove(0);
-                } else {
-                    return Err(CronError::InvalidTimeZone(tz_str.to_string()));
+            if let Some((prefix, tz_str)) = elements[0].split_once('=') {
+                if prefix.eq_ignore_ascii_case("tz") {
+                    if let Ok(tz_value) = Tz::from_str(tz_str) {
+                        tz = Some(tz_value);
+                        elements.remove(0);
+                    } else {
+                        return Err(CronError::InvalidTimeZone(tz_str.to_string()));
+                    }
                 }
             }
         }
