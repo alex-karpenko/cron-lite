@@ -4,11 +4,53 @@ use crate::{
     utils::{self, days_in_month},
     CronError, Result,
 };
-use chrono::{DateTime, Datelike, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, LocalResult, TimeZone, Timelike};
 use std::fmt::Display;
 
 /// Common type for internal values of date and time parts.
 pub(crate) type PatternValueType = u16;
+
+#[inline]
+pub(crate) fn make_local_datetime<Tz: TimeZone>(
+    tz: &Tz,
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> Option<DateTime<Tz>> {
+    match tz.with_ymd_and_hms(year, month, day, hour, minute, second) {
+        LocalResult::Single(dt) => Some(dt),
+        LocalResult::Ambiguous(earliest, _latest) => Some(earliest),
+        LocalResult::None => None,
+    }
+}
+
+#[inline]
+pub(crate) fn make_local_datetime_start_of_day<Tz: TimeZone>(
+    tz: &Tz,
+    year: i32,
+    month: u32,
+    day: u32,
+) -> Option<DateTime<Tz>> {
+    if let Some(dt) = make_local_datetime(tz, year, month, day, 0, 0, 0) {
+        return Some(dt);
+    }
+    // Midnight (00:00:00) does not exist in local time (midnight DST spring gap).
+    // Find the earliest valid time on this day.
+    for h in 1..=23 {
+        if let Some(dt) = make_local_datetime(tz, year, month, day, h, 0, 0) {
+            return Some(dt);
+        }
+        for m in [15, 30, 45] {
+            if let Some(dt) = make_local_datetime(tz, year, month, day, h, m, 0) {
+                return Some(dt);
+            }
+        }
+    }
+    None
+}
 
 /// Pattern is a single element (part) of a schedule expression.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -199,35 +241,38 @@ impl Pattern {
             if current_val > start {
                 match self.type_ {
                     PatternType::Years => {
-                        *current = current
-                            .with_day(1)?
-                            .with_month(1)?
-                            .with_year(i32::from(current_val))?
-                            .with_hour(0)?
-                            .with_minute(0)?
-                            .with_second(0)?;
+                        *current = make_local_datetime_start_of_day(&current.timezone(), i32::from(current_val), 1, 1)?;
                     }
                     PatternType::Months => {
-                        *current = current
-                            .with_day(1)?
-                            .with_month(u32::from(current_val))?
-                            .with_hour(0)?
-                            .with_minute(0)?
-                            .with_second(0)?;
+                        *current = make_local_datetime_start_of_day(
+                            &current.timezone(),
+                            current.year(),
+                            u32::from(current_val),
+                            1,
+                        )?;
                     }
                     PatternType::Doms | PatternType::Dows => {
-                        *current = current
-                            .with_day(u32::from(current_val))?
-                            .with_hour(0)?
-                            .with_minute(0)?
-                            .with_second(0)?;
+                        *current = make_local_datetime_start_of_day(
+                            &current.timezone(),
+                            current.year(),
+                            current.month(),
+                            u32::from(current_val),
+                        )?;
                     }
                     PatternType::Hours => {
                         let mut candidate = Some(current_val);
                         loop {
                             if let Some(h) = candidate {
-                                if let Some(updated) = current.with_hour(u32::from(h)) {
-                                    *current = updated.with_minute(0)?.with_second(0)?;
+                                if let Some(updated) = make_local_datetime(
+                                    &current.timezone(),
+                                    current.year(),
+                                    current.month(),
+                                    current.day(),
+                                    u32::from(h),
+                                    0,
+                                    0,
+                                ) {
+                                    *current = updated;
                                     value = Some(h);
                                     break;
                                 }
@@ -246,10 +291,64 @@ impl Pattern {
                         }
                     }
                     PatternType::Minutes => {
-                        *current = current.with_minute(u32::from(current_val))?.with_second(0)?;
+                        let mut candidate = Some(current_val);
+                        loop {
+                            if let Some(m) = candidate {
+                                if let Some(updated) = make_local_datetime(
+                                    &current.timezone(),
+                                    current.year(),
+                                    current.month(),
+                                    current.day(),
+                                    current.hour(),
+                                    u32::from(m),
+                                    0,
+                                ) {
+                                    *current = updated;
+                                    value = Some(m);
+                                    break;
+                                }
+                                // Minute `m` does not exist in local time (sub-hour DST gap).
+                                // Try the next matching minute in this hour.
+                                let next_start = m + 1;
+                                if next_start > max {
+                                    value = None;
+                                    break;
+                                }
+                                candidate = self.next_value(current, next_start, max);
+                            } else {
+                                value = None;
+                                break;
+                            }
+                        }
                     }
                     PatternType::Seconds => {
-                        *current = current.with_second(u32::from(current_val))?;
+                        let mut candidate = Some(current_val);
+                        loop {
+                            if let Some(s) = candidate {
+                                if let Some(updated) = make_local_datetime(
+                                    &current.timezone(),
+                                    current.year(),
+                                    current.month(),
+                                    current.day(),
+                                    current.hour(),
+                                    current.minute(),
+                                    u32::from(s),
+                                ) {
+                                    *current = updated;
+                                    value = Some(s);
+                                    break;
+                                }
+                                let next_start = s + 1;
+                                if next_start > max {
+                                    value = None;
+                                    break;
+                                }
+                                candidate = self.next_value(current, next_start, max);
+                            } else {
+                                value = None;
+                                break;
+                            }
+                        }
                     }
                 }
             }

@@ -3,7 +3,7 @@ use std::ops::{Add, Sub};
 
 /// Generator (iterator) state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct SeriesWithStep<T: Copy> {
+pub struct SeriesWithStep<T: Copy> {
     max: T,
     step: T,
     next: Option<T>,
@@ -15,10 +15,12 @@ where
 {
     /// Constructs a new series generator.
     ///
-    /// Panics if `max < min`, `start` is out of bounds, or `step` is 0.
+    /// # Panics
+    /// Panics if `max < min`, `start` is out of bounds (`start < min || start > max`), or `step` is 0.
+    /// In practice, callers in `pattern.rs` validate range bounds and steps prior to construction.
     #[inline]
     #[allow(clippy::eq_op)]
-    pub(crate) fn new(min: T, max: T, step: T, start: T) -> Self {
+    pub fn new(min: T, max: T, step: T, start: T) -> Self {
         assert!(max >= min, "max value is less than min value");
         assert!(
             !(start < min || start > max),

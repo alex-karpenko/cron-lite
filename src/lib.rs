@@ -216,7 +216,7 @@ pub use asynchronous::CronSleep;
 pub use asynchronous::CronStream;
 
 pub use error::CronError;
-pub use schedule::{Schedule, ScheduleIterator};
+pub use schedule::{Schedule, ScheduleIterator, MAX_YEAR, MIN_YEAR};
 
 /// Convenient alias for `Result`.
 pub type Result<T, E = CronError> = std::result::Result<T, E>;

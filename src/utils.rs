@@ -3,16 +3,12 @@ use crate::pattern::PatternValueType;
 use std::cmp::Ordering;
 
 /// Converts a string into an unsigned number with bounds validation.
-pub(crate) fn parse_digital_value(
-    input: &str,
-    min: PatternValueType,
-    max: PatternValueType,
-) -> Option<PatternValueType> {
+pub fn parse_digital_value(input: &str, min: PatternValueType, max: PatternValueType) -> Option<PatternValueType> {
     input.parse::<u16>().ok().filter(|&v| (min..=max).contains(&v))
 }
 
 /// Converts a string with a mnemonic value representation into an unsigned number.
-pub(crate) fn parse_string_value(input: &str, values: &[&str]) -> Option<PatternValueType> {
+pub fn parse_string_value(input: &str, values: &[&str]) -> Option<PatternValueType> {
     if input.is_empty() {
         None
     } else {
@@ -25,12 +21,15 @@ pub(crate) fn parse_string_value(input: &str, values: &[&str]) -> Option<Pattern
 
 /// Returns `true` if the provided year is a leap year.
 #[inline]
-pub(crate) fn is_leap_year(year: PatternValueType) -> bool {
+pub const fn is_leap_year(year: PatternValueType) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// Returns the number of days in the specified month.
-pub(crate) fn days_in_month(year: PatternValueType, month: PatternValueType) -> PatternValueType {
+///
+/// # Panics
+/// Panics if `month` is 0 or > 12. Validated by `Pattern::parse` before call.
+pub fn days_in_month(year: PatternValueType, month: PatternValueType) -> PatternValueType {
     assert!(!(month == 0 || month > 12), "Invalid month: {month}");
 
     match month {
@@ -43,7 +42,10 @@ pub(crate) fn days_in_month(year: PatternValueType, month: PatternValueType) -> 
 }
 
 /// Calculates the day of the week for the specified date.
-pub(crate) fn day_of_week(year: PatternValueType, month: PatternValueType, day: PatternValueType) -> PatternValueType {
+///
+/// # Panics
+/// Panics if date is out of range. Validated before call.
+pub fn day_of_week(year: PatternValueType, month: PatternValueType, day: PatternValueType) -> PatternValueType {
     assert!(
         !(day == 0 || month == 0 || month > 12 || day > days_in_month(year, month)),
         "Invalid date: {year:04}-{month:02}-{day:02}"
@@ -61,7 +63,10 @@ pub(crate) fn day_of_week(year: PatternValueType, month: PatternValueType, day: 
 }
 
 /// Returns the day in the month for the last specified day of the week.
-pub(crate) fn last_dow(year: PatternValueType, month: PatternValueType, dow: PatternValueType) -> PatternValueType {
+///
+/// # Panics
+/// Panics if month or dow is invalid. Validated before call.
+pub fn last_dow(year: PatternValueType, month: PatternValueType, dow: PatternValueType) -> PatternValueType {
     assert!(
         !(month == 0 || month > 12 || dow > 6),
         "Invalid month or day of week: {month:02}/{dow}"
@@ -77,7 +82,10 @@ pub(crate) fn last_dow(year: PatternValueType, month: PatternValueType, dow: Pat
 }
 
 /// Returns the date (day in the month) of the specified N-th day of the week, or `None` if it does not exist in the month.
-pub(crate) fn nth_dow(
+///
+/// # Panics
+/// Panics if month, dow, or nth is invalid. Validated before call.
+pub fn nth_dow(
     year: PatternValueType,
     month: PatternValueType,
     dow: PatternValueType,
@@ -106,11 +114,10 @@ pub(crate) fn nth_dow(
 }
 
 /// Returns the date of the weekday (not Sunday or Saturday) nearest to the specified date in the same month.
-pub(crate) fn nearest_weekday(
-    year: PatternValueType,
-    month: PatternValueType,
-    day: PatternValueType,
-) -> PatternValueType {
+///
+/// # Panics
+/// Panics if date is invalid. Validated before call.
+pub fn nearest_weekday(year: PatternValueType, month: PatternValueType, day: PatternValueType) -> PatternValueType {
     assert!(
         !(day == 0 || month == 0 || month > 12 || day > days_in_month(year, month)),
         "Invalid date: {year:04}-{month:02}-{day:02}"

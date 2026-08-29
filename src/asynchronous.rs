@@ -30,9 +30,16 @@ pub enum CronEvent<Tz: TimeZone> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum FutureState {
+enum SleepState<Tz: TimeZone> {
     Idle,
     Waiting(SleepQueueKey),
+    Completed(CronEvent<Tz>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum StreamState<Tz: TimeZone> {
+    Idle,
+    Waiting { key: SleepQueueKey, next: DateTime<Tz> },
     Completed,
 }
 
@@ -67,6 +74,9 @@ enum ControlCmd {
 /// which represents the kind and time of the event that happened.
 ///
 /// May panic if the background thread (which controls all sleep and stream events) fails.
+/// On first use of any asynchronous method (`sleep`, `stream`, `into_stream`), a single
+/// dedicated background OS thread is spawned to manage wakeups and runs for the lifetime
+/// of the process.
 ///
 /// Be aware that the precision of the time when events happen is not perfect
 /// due to the nature of the asynchronous Rust implementation and
@@ -108,8 +118,7 @@ pub struct CronSleep<Tz: TimeZone> {
     until: Instant,
     next: DateTime<Tz>,
     tx: ControlChannel,
-    state: FutureState,
-    returned: Option<CronEvent<Tz>>,
+    state: SleepState<Tz>,
 }
 
 impl<Tz: TimeZone> CronSleep<Tz> {
@@ -118,8 +127,7 @@ impl<Tz: TimeZone> CronSleep<Tz> {
             until,
             next,
             tx: sleep_thread_tx().clone(),
-            state: FutureState::Idle,
-            returned: None,
+            state: SleepState::Idle,
         }
     }
 
@@ -130,8 +138,7 @@ impl<Tz: TimeZone> CronSleep<Tz> {
 
     #[inline]
     fn finish(&mut self, event: CronEvent<Tz>) -> Poll<CronEvent<Tz>> {
-        self.state = FutureState::Completed;
-        self.returned = Some(event.clone());
+        self.state = SleepState::Completed(event.clone());
 
         Poll::Ready(event)
     }
@@ -144,7 +151,7 @@ impl<Tz: TimeZone> Future for CronSleep<Tz> {
         let now_inst = Instant::now();
         let next = self.next.clone();
         match &self.state {
-            FutureState::Idle => {
+            SleepState::Idle => {
                 // It wasn't started yet
                 if now_inst >= self.until {
                     // But it's already missed
@@ -157,11 +164,11 @@ impl<Tz: TimeZone> Future for CronSleep<Tz> {
                         key: key.clone(),
                         waker,
                     });
-                    self.state = FutureState::Waiting(key);
+                    self.state = SleepState::Waiting(key);
                     Poll::Pending
                 }
             }
-            FutureState::Waiting(key) => {
+            SleepState::Waiting(key) => {
                 // Already running in the sleep thread
                 if now_inst >= self.until {
                     // And finished in time
@@ -176,13 +183,8 @@ impl<Tz: TimeZone> Future for CronSleep<Tz> {
                     Poll::Pending
                 }
             }
-            // Theoretically, this branch is unreachable if you use a valid async runtime,
-            // but to protect from invalid ones, we return the last actual returned value.
-            FutureState::Completed => Poll::Ready(
-                self.returned
-                    .clone()
-                    .expect("unexpected call to poll, looks like a BUG!"),
-            ),
+            // If already completed, return the recorded event.
+            SleepState::Completed(event) => Poll::Ready(event.clone()),
         }
     }
 }
@@ -190,7 +192,7 @@ impl<Tz: TimeZone> Future for CronSleep<Tz> {
 impl<Tz: TimeZone> FusedFuture for CronSleep<Tz> {
     #[inline]
     fn is_terminated(&self) -> bool {
-        self.state == FutureState::Completed
+        matches!(self.state, SleepState::Completed(_))
     }
 }
 
@@ -198,7 +200,7 @@ impl<Tz: TimeZone> FusedFuture for CronSleep<Tz> {
 impl<Tz: TimeZone> PinnedDrop for CronSleep<Tz> {
     #[inline]
     fn drop(self: Pin<&mut Self>) {
-        if let FutureState::Waiting(key) = &self.state {
+        if let SleepState::Waiting(key) = &self.state {
             // Best-effort cleanup: if the sleep-manager thread is already gone, there's
             // nothing left to notify and nothing to gain by panicking during a drop.
             let _ = self.tx.send(ControlCmd::Remove { key: key.clone() });
@@ -220,6 +222,9 @@ impl<Tz: TimeZone> PinnedDrop for CronSleep<Tz> {
 /// The default configuration is to return all kinds of events.
 ///
 /// May panic if the background thread (which controls all sleep and stream events) fails.
+/// On first use of any asynchronous method (`sleep`, `stream`, `into_stream`), a single
+/// dedicated background OS thread is spawned to manage wakeups and runs for the lifetime
+/// of the process.
 ///
 /// Be aware that the precision of the time when events happen is not perfect
 /// due to the nature of the asynchronous Rust implementation and
@@ -253,22 +258,20 @@ impl<Tz: TimeZone> PinnedDrop for CronSleep<Tz> {
 #[pin_project(PinnedDrop)]
 #[derive(Debug, Clone)]
 pub struct CronStream<Tz: TimeZone> {
-    state: FutureState,
+    state: StreamState<Tz>,
     iter: ScheduleIterator<Tz>,
     tx: ControlChannel,
     skip_missed: bool,
-    next: Option<DateTime<Tz>>,
 }
 
 impl<Tz: TimeZone> CronStream<Tz> {
     #[inline]
     fn new(iter: ScheduleIterator<Tz>) -> Self {
         Self {
-            state: FutureState::Idle,
+            state: StreamState::Idle,
             tx: sleep_thread_tx().clone(),
             iter,
             skip_missed: false,
-            next: None,
         }
     }
 
@@ -328,7 +331,7 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
         let now_nanos = Utc::now().timestamp_nanos_opt().unwrap();
         let now_inst = Instant::now();
         match &self.state {
-            FutureState::Idle => {
+            StreamState::Idle => {
                 // No active events in the queue
                 // Try to push the next one
                 loop {
@@ -341,25 +344,21 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
                                 key: key.clone(),
                                 waker: cx.waker().clone(),
                             });
-                            self.state = FutureState::Waiting(key);
-                            self.next = Some(next);
+                            self.state = StreamState::Waiting { key, next };
                             return Poll::Pending;
+                        } else if self.skip_missed {
+                            continue;
                         } else {
-                            // We got an event, but it's already in the past
-                            if self.skip_missed {
-                                continue;
-                            } else {
-                                return Poll::Ready(Some(CronEvent::Missed(next)));
-                            }
+                            return Poll::Ready(Some(CronEvent::Missed(next)));
                         }
                     } else {
                         // The iterator is gone, so we finish the stream
-                        self.state = FutureState::Completed;
+                        self.state = StreamState::Completed;
                         return Poll::Ready(None);
                     }
                 }
             }
-            FutureState::Waiting(key) => {
+            StreamState::Waiting { key, next } => {
                 if key.until > now_inst {
                     // Still waiting, so refresh Waker
                     self.send_cmd(ControlCmd::Insert {
@@ -370,14 +369,13 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
                 } else {
                     // The expected time of this particular event has arrived
                     self.send_cmd(ControlCmd::Remove { key: key.clone() });
-                    self.state = FutureState::Idle;
-                    Poll::Ready(Some(CronEvent::Ok(self.next.clone().unwrap())))
+                    let next = next.clone();
+                    self.state = StreamState::Idle;
+                    Poll::Ready(Some(CronEvent::Ok(next)))
                 }
             }
-            // Theoretically, this branch is unreachable.
-            // But in case of an invalid runtime call to a completed stream,
-            // we return the "end-of-stream" value.
-            FutureState::Completed => Poll::Ready(None),
+            // In case of a call to a completed stream, return the "end-of-stream" value.
+            StreamState::Completed => Poll::Ready(None),
         }
     }
 }
@@ -385,19 +383,19 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
 impl<Tz: TimeZone> FusedStream for CronStream<Tz> {
     #[inline]
     fn is_terminated(&self) -> bool {
-        self.state == FutureState::Completed
+        matches!(self.state, StreamState::Completed)
     }
 }
 
 #[pinned_drop]
 impl<Tz: TimeZone> PinnedDrop for CronStream<Tz> {
     fn drop(mut self: Pin<&mut Self>) {
-        if let FutureState::Waiting(key) = &self.state {
+        if let StreamState::Waiting { key, .. } = &self.state {
             // Best-effort cleanup: if the sleep-manager thread is already gone, there's
             // nothing left to notify and nothing to gain by panicking during a drop.
             let _ = self.tx.send(ControlCmd::Remove { key: key.clone() });
         }
-        self.state = FutureState::Completed;
+        self.state = StreamState::Completed;
     }
 }
 
@@ -718,7 +716,7 @@ mod tests {
 
         select! {
             _ = test_sleep => {
-                assert_eq!(test_sleep.state, FutureState::Completed);
+                assert!(matches!(test_sleep.state, SleepState::Completed(_)));
                 assert!(test_sleep.is_terminated());
             },
             () = futures::future::pending::<()>() => {

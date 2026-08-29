@@ -236,40 +236,57 @@ impl Schedule {
             // Calculate the next possible valid date/time from the current,
             // with leaping to the first day/hour/... when the current element was changed.
             year = self.year.next(&mut current);
-            if year.is_some() {
-                month = self.month.next(&mut current);
-                year = Some(current.year() as PatternValueType);
-                if month.is_some() {
-                    // Prepare day of month depending on DOM/DOW pattern types.
-                    dom = match DomDowRelation::classify(self.dom.pattern(), self.dow.pattern()) {
-                        DomDowRelation::Dom => self.dom.next(&mut current),
-                        DomDowRelation::Dow => self.dow.next(&mut current),
-                        DomDowRelation::Invalid => unreachable!(),
-                    };
-                    year = Some(current.year() as PatternValueType);
-                    month = Some(current.month() as PatternValueType);
-                    if dom.is_some() {
-                        hour = self.hour.next(&mut current);
-                        year = Some(current.year() as PatternValueType);
-                        month = Some(current.month() as PatternValueType);
-                        dom = Some(current.day() as PatternValueType);
-                        if hour.is_some() {
-                            minute = self.minute.next(&mut current);
-                            year = Some(current.year() as PatternValueType);
-                            month = Some(current.month() as PatternValueType);
-                            dom = Some(current.day() as PatternValueType);
-                            hour = Some(current.hour() as PatternValueType);
-                            if minute.is_some() {
-                                second = self.second.next(&mut current);
-                                year = Some(current.year() as PatternValueType);
-                                month = Some(current.month() as PatternValueType);
-                                dom = Some(current.day() as PatternValueType);
-                                hour = Some(current.hour() as PatternValueType);
-                                minute = Some(current.minute() as PatternValueType);
-                            }
-                        }
-                    }
+            month = if year.is_some() {
+                self.month.next(&mut current)
+            } else {
+                None
+            };
+            dom = if month.is_some() {
+                match DomDowRelation::classify(self.dom.pattern(), self.dow.pattern()) {
+                    DomDowRelation::Dom => self.dom.next(&mut current),
+                    DomDowRelation::Dow => self.dow.next(&mut current),
+                    DomDowRelation::Invalid => unreachable!(),
                 }
+            } else {
+                None
+            };
+            hour = if dom.is_some() {
+                self.hour.next(&mut current)
+            } else {
+                None
+            };
+            minute = if hour.is_some() {
+                self.minute.next(&mut current)
+            } else {
+                None
+            };
+            second = if minute.is_some() {
+                self.second.next(&mut current)
+            } else {
+                None
+            };
+
+            // Sync all matched fields with current datetime in case downstream leaps updated them
+            if second.is_some() {
+                year = Some(current.year() as PatternValueType);
+                month = Some(current.month() as PatternValueType);
+                dom = Some(current.day() as PatternValueType);
+                hour = Some(current.hour() as PatternValueType);
+                minute = Some(current.minute() as PatternValueType);
+            } else if minute.is_some() {
+                year = Some(current.year() as PatternValueType);
+                month = Some(current.month() as PatternValueType);
+                dom = Some(current.day() as PatternValueType);
+                hour = Some(current.hour() as PatternValueType);
+            } else if hour.is_some() {
+                year = Some(current.year() as PatternValueType);
+                month = Some(current.month() as PatternValueType);
+                dom = Some(current.day() as PatternValueType);
+            } else if dom.is_some() {
+                year = Some(current.year() as PatternValueType);
+                month = Some(current.month() as PatternValueType);
+            } else if month.is_some() {
+                year = Some(current.year() as PatternValueType);
             }
         }
 
@@ -428,12 +445,10 @@ fn inc_month(
         *hour = Some(0);
         *minute = Some(0);
         *second = Some(0);
-
-        *month
     } else {
         inc_year(year, month, dom, hour, minute, second)?;
-        *month
     }
+    *month
 }
 
 /// Increments the current day of month and sets all other elements to their first valid values.
@@ -451,12 +466,10 @@ fn inc_dom(
         *hour = Some(0);
         *minute = Some(0);
         *second = Some(0);
-
-        *dom
     } else {
         inc_month(year, month, dom, hour, minute, second)?;
-        *dom
     }
+    *dom
 }
 
 /// Increments the current hour and sets all other elements to their first valid values.
@@ -473,12 +486,10 @@ fn inc_hour(
         *hour = Some((*hour)? + 1);
         *minute = Some(0);
         *second = Some(0);
-
-        *hour
     } else {
         inc_dom(year, month, dom, hour, minute, second)?;
-        *hour
     }
+    *hour
 }
 
 /// Increments the current minute and sets all other elements to their first valid values.
@@ -494,12 +505,10 @@ fn inc_minute(
     if (*minute)? < 59 {
         *minute = Some((*minute)? + 1);
         *second = Some(0);
-
-        *minute
     } else {
         inc_hour(year, month, dom, hour, minute, second)?;
-        *minute
     }
+    *minute
 }
 
 #[cfg(test)]
@@ -1630,6 +1639,85 @@ mod tests {
             let mut set = BTreeSet::new();
             set.extend(&result);
             assert_eq!(set.len(), result.len());
+        }
+
+        #[test]
+        fn test_dst_fall_back_daily() {
+            use chrono_tz::Europe::Kyiv;
+
+            let schedule = Schedule::new("TZ=Europe/Kyiv 0 30 3 * * *").unwrap();
+            let mut current = Kyiv.with_ymd_and_hms(2024, 10, 25, 0, 0, 0).unwrap();
+            let mut occurrences = Vec::new();
+            for _ in 0..5 {
+                let next = schedule.upcoming(&current).unwrap();
+                occurrences.push(next.to_rfc3339());
+                current = next + chrono::Duration::seconds(1);
+            }
+            assert_eq!(occurrences[0], "2024-10-25T03:30:00+03:00");
+            assert_eq!(occurrences[1], "2024-10-26T03:30:00+03:00");
+            assert_eq!(occurrences[2], "2024-10-27T03:30:00+03:00");
+            assert_eq!(occurrences[3], "2024-10-28T03:30:00+02:00");
+            assert_eq!(occurrences[4], "2024-10-29T03:30:00+02:00");
+        }
+
+        #[test]
+        fn test_dst_fall_back_hourly() {
+            use chrono_tz::Europe::Kyiv;
+
+            let schedule = Schedule::new("TZ=Europe/Kyiv 0 30 * * * *").unwrap();
+            let mut current = Kyiv.with_ymd_and_hms(2024, 10, 27, 1, 0, 0).unwrap();
+            let mut occurrences = Vec::new();
+            for _ in 0..4 {
+                let next = schedule.upcoming(&current).unwrap();
+                occurrences.push(next.to_rfc3339());
+                current = next + chrono::Duration::seconds(1);
+            }
+            assert_eq!(occurrences[0], "2024-10-27T01:30:00+03:00");
+            assert_eq!(occurrences[1], "2024-10-27T02:30:00+03:00");
+            assert_eq!(occurrences[2], "2024-10-27T03:30:00+03:00");
+            assert_eq!(occurrences[3], "2024-10-27T04:30:00+02:00");
+        }
+
+        #[test]
+        fn test_dst_fall_back_without_tz_prefix() {
+            use chrono_tz::Europe::Kyiv;
+
+            let schedule = Schedule::new("0 30 3 * * *").unwrap();
+            let mut current = Kyiv.with_ymd_and_hms(2024, 10, 25, 0, 0, 0).unwrap();
+            let mut occurrences = Vec::new();
+            for _ in 0..5 {
+                let next = schedule.upcoming(&current).unwrap();
+                occurrences.push(next.to_rfc3339());
+                current = next + chrono::Duration::seconds(1);
+            }
+            assert_eq!(occurrences[0], "2024-10-25T03:30:00+03:00");
+            assert_eq!(occurrences[1], "2024-10-26T03:30:00+03:00");
+            assert_eq!(occurrences[2], "2024-10-27T03:30:00+03:00");
+            assert_eq!(occurrences[3], "2024-10-28T03:30:00+02:00");
+            assert_eq!(occurrences[4], "2024-10-29T03:30:00+02:00");
+        }
+
+        #[test]
+        fn test_dst_fall_back_annual() {
+            use chrono_tz::Europe::Kyiv;
+
+            let schedule = Schedule::new("TZ=Europe/Kyiv 0 30 3 27 10 * *").unwrap();
+            let current = Kyiv.with_ymd_and_hms(2024, 10, 25, 0, 0, 0).unwrap();
+            let next = schedule.upcoming(&current).unwrap();
+            assert_eq!(next.to_rfc3339(), "2024-10-27T03:30:00+03:00");
+        }
+
+        #[test]
+        fn test_sub_hour_dst_transition() {
+            use chrono_tz::Australia::Lord_Howe;
+
+            // Lord Howe transitions +11:00 -> +10:30 (30 min shift)
+            let schedule = Schedule::new("TZ=Australia/Lord_Howe 0 45 * * * *").unwrap();
+            let current = Lord_Howe.with_ymd_and_hms(2024, 4, 7, 0, 0, 0).unwrap();
+            let mut iter = schedule.iter(&current);
+            let next1 = iter.next().unwrap();
+            let next2 = iter.next().unwrap();
+            assert!(next2 > next1);
         }
     }
 }
