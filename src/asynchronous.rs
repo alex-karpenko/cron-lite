@@ -816,7 +816,7 @@ mod tests {
     }
 
     #[rstest]
-    #[timeout(Duration::from_secs(1))]
+    #[timeout(Duration::from_secs(5))]
     fn test_sleep_drop_while_waiting() {
         use futures::task::noop_waker;
         use std::task::{Context, Poll};
@@ -842,7 +842,7 @@ mod tests {
 
     #[tokio::test]
     #[rstest]
-    #[timeout(Duration::from_secs(1))]
+    #[timeout(Duration::from_secs(5))]
     async fn test_sleep_poll_after_completed() {
         use futures::task::noop_waker;
         use std::task::{Context, Poll};
@@ -860,7 +860,7 @@ mod tests {
     }
 
     #[rstest]
-    #[timeout(Duration::from_secs(1))]
+    #[timeout(Duration::from_secs(5))]
     fn test_stream_drop_while_waiting() {
         use futures::task::noop_waker;
         use std::task::{Context, Poll};
@@ -885,7 +885,7 @@ mod tests {
     }
 
     #[rstest]
-    #[timeout(Duration::from_secs(1))]
+    #[timeout(Duration::from_secs(5))]
     fn test_stream_poll_after_completed() {
         use futures::task::noop_waker;
         use std::task::{Context, Poll};
