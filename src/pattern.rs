@@ -99,7 +99,17 @@ impl Pattern {
         // valid values - reject oversized lists up front, before doing any parsing work, to
         // bound the cost of handling adversarially large input.
         let (min, max) = type_.min_max();
-        let max_items = (max - min + 1) as usize;
+        let max_items = match type_ {
+            PatternType::Dows if input.contains('#') => 7 * 5, // in case of sharp expression we can get 7*5 combinations
+            PatternType::Seconds
+            | PatternType::Minutes
+            | PatternType::Hours
+            | PatternType::Doms
+            | PatternType::Months
+            | PatternType::Dows
+            | PatternType::Years => max - min + 1,
+        } as usize;
+
         if input.split(',').nth(max_items).is_some() {
             return Err(CronError::TooManyPatternValues {
                 field: type_.to_string(),
