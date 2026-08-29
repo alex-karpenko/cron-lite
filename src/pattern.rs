@@ -52,6 +52,26 @@ pub(crate) fn make_local_datetime_start_of_day<Tz: TimeZone>(
     None
 }
 
+#[inline]
+pub(crate) fn make_local_datetime_start_of_hour<Tz: TimeZone>(
+    tz: &Tz,
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+) -> Option<DateTime<Tz>> {
+    if let Some(dt) = make_local_datetime(tz, year, month, day, hour, 0, 0) {
+        return Some(dt);
+    }
+    // Sub-hour DST gap (e.g. 02:00..02:29 doesn't exist, but 02:30 exists)
+    for m in [15, 30, 45] {
+        if let Some(dt) = make_local_datetime(tz, year, month, day, hour, m, 0) {
+            return Some(dt);
+        }
+    }
+    None
+}
+
 /// Pattern is a single element (part) of a schedule expression.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Pattern {
@@ -263,14 +283,12 @@ impl Pattern {
                         let mut candidate = Some(current_val);
                         loop {
                             if let Some(h) = candidate {
-                                if let Some(updated) = make_local_datetime(
+                                if let Some(updated) = make_local_datetime_start_of_hour(
                                     &current.timezone(),
                                     current.year(),
                                     current.month(),
                                     current.day(),
                                     u32::from(h),
-                                    0,
-                                    0,
                                 ) {
                                     *current = updated;
                                     value = Some(h);
@@ -625,6 +643,7 @@ mod tests {
     const MAX_YEAR_STR: &str = "2099";
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds)]
     #[case(PatternType::Minutes)]
     #[case(PatternType::Hours)]
@@ -668,6 +687,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds)]
     #[case(PatternType::Minutes)]
     fn test_pattern_item_parse_valid_1(#[case] type_: PatternType) {
@@ -707,7 +727,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_parse_valid_dows() {
         let test_cases = vec![
             ("*", PatternItem::All),
@@ -757,7 +778,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_parse_valid_months() {
         let test_cases = vec![
             ("*", PatternItem::All),
@@ -820,7 +842,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_parse_valid_doms() {
         let test_cases = vec![
             ("*", PatternItem::All),
@@ -857,7 +880,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_parse_valid_year() {
         let test_cases = vec![
             ("*", PatternItem::All),
@@ -892,6 +916,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds, vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/60", "60", "0/1"])]
     #[case(PatternType::Minutes, vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/60", "60", "0/1"])]
     #[case(PatternType::Hours,   vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/24", "24", "0/1"])]
@@ -907,6 +932,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds, 60)]
     #[case(PatternType::Minutes, 60)]
     #[case(PatternType::Hours, 24)]
@@ -939,7 +965,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_parse_large_list_rejected() {
         let massive_input = vec!["0"; 10_000].join(",");
         assert!(matches!(
@@ -949,6 +976,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds, "0", 0)]
     #[case(PatternType::Seconds, "33", 33)]
     #[case(PatternType::Seconds, "59", 59)]
@@ -986,6 +1014,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds, "60")]
     #[case(PatternType::Seconds, "-1")]
     #[case(PatternType::Seconds, "256")]
@@ -1032,6 +1061,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Seconds
     #[case("00:00:00", "0", PatternType::Seconds, Some(0))]
     #[case("00:00:00", "00", PatternType::Seconds, Some(0))]
@@ -1338,7 +1368,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_type_display() {
         assert_eq!(PatternType::Seconds.to_string(), "seconds");
         assert_eq!(PatternType::Minutes.to_string(), "minutes");
@@ -1347,5 +1378,50 @@ mod tests {
         assert_eq!(PatternType::Months.to_string(), "months");
         assert_eq!(PatternType::Dows.to_string(), "days of week");
         assert_eq!(PatternType::Years.to_string(), "years");
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_leaping_years_and_months() {
+        use chrono::Utc;
+
+        // Leaping years
+        let pattern_year = Pattern::parse(PatternType::Years, "2025,2028").unwrap();
+        let mut current = Utc.with_ymd_and_hms(2024, 5, 15, 12, 30, 45).unwrap();
+        let val = pattern_year.next(&mut current);
+        assert_eq!(val, Some(2025));
+        assert_eq!(current, Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap());
+
+        // Leaping months
+        let pattern_month = Pattern::parse(PatternType::Months, "6,10").unwrap();
+        let mut current = Utc.with_ymd_and_hms(2024, 3, 15, 12, 30, 45).unwrap();
+        let val = pattern_month.next(&mut current);
+        assert_eq!(val, Some(6));
+        assert_eq!(current, Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap());
+    }
+
+    #[cfg(feature = "tz")]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_make_local_datetime_start_of_day_dst_gap() {
+        use chrono_tz::America::Havana;
+        // In Havana on 2024-03-10, midnight 00:00:00 was skipped directly to 01:00:00
+        let dt = make_local_datetime_start_of_day(&Havana, 2024, 3, 10);
+        assert!(dt.is_some());
+        assert_eq!(dt.unwrap().hour(), 1);
+    }
+
+    #[cfg(feature = "tz")]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_minutes_dst_gap_retry() {
+        use crate::Schedule;
+        use chrono_tz::Australia::Lord_Howe;
+        // Lord Howe: 2024-10-06 02:00 -> 02:30 gap (minutes 00..29 do not exist)
+        let schedule = Schedule::new("TZ=Australia/Lord_Howe 0 0,15,30,45 2 6 10 *").unwrap();
+        let current = Lord_Howe.with_ymd_and_hms(2024, 10, 6, 1, 0, 0).unwrap();
+        let next = schedule.upcoming(&current).unwrap();
+        assert_eq!(next.minute(), 30);
+        assert_eq!(next.hour(), 2);
     }
 }

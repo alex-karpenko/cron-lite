@@ -1,7 +1,10 @@
 use chrono::Utc;
 use cron_lite::{Result, Schedule};
+use rstest::rstest;
+use std::time::Duration;
 
-#[test]
+#[rstest]
+#[timeout(Duration::from_secs(1))]
 fn upcoming() -> Result<()> {
     let schedule = Schedule::new("0 0 0 * * *")?;
     let now = Utc::now();

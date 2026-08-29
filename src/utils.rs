@@ -152,24 +152,28 @@ mod tests {
     use rstest::rstest;
     use std::time::Duration;
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_valid_value_within_range() {
         assert_eq!(parse_digital_value("5", 0, 10), Some(5));
         assert_eq!(parse_digital_value("0", 0, 10), Some(0));
         assert_eq!(parse_digital_value("10", 0, 10), Some(10));
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_value_below_minimum() {
         assert_eq!(parse_digital_value("5", 10, 20), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_value_above_maximum() {
         assert_eq!(parse_digital_value("25", 0, 20), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_invalid_input() {
         assert_eq!(parse_digital_value("abc", 0, 10), None);
         assert_eq!(parse_digital_value("", 0, 10), None);
@@ -177,7 +181,8 @@ mod tests {
         assert_eq!(parse_digital_value("1.5", 0, 10), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_edge_cases() {
         // Test with min equal to max
         assert_eq!(parse_digital_value("5", 5, 5), Some(5));
@@ -188,7 +193,8 @@ mod tests {
         assert_eq!(parse_digital_value("65535", 0, 65535), Some(65535));
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_string_value_regular() {
         // Test data
         let test_array = &[
@@ -221,20 +227,23 @@ mod tests {
         assert_eq!(parse_string_value("dec", months), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_string_value_empty_array() {
         let empty_array: &[&str] = &[];
         assert_eq!(parse_string_value("test", empty_array), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_string_value_non_ascii() {
         let array = &["jan", "feb", "mar"];
         assert_eq!(parse_string_value("j\u{00e4}n", array), None);
         assert_eq!(parse_string_value("JAN", array), Some(0));
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_string_value_whitespace() {
         let array = &["test", "value"];
         assert_eq!(parse_string_value(" test ", array), None);
@@ -242,6 +251,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test leap years divisible by 4 but not 100
     #[case(2024, true)]
     #[case(1996, true)]
@@ -264,6 +274,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test months with 31 days
     #[case(2023, 1, 31)] // January
     #[case(2023, 3, 31)] // March
@@ -295,6 +306,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2023, 0)]
     #[case(2023, 13)]
     #[should_panic(expected = "Invalid month")]
@@ -303,6 +315,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test regular days
     #[case(2023, 12, 25, 1)] // Monday
     #[case(2024, 1, 1, 1)] // Monday
@@ -337,6 +350,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2023, 2, 29)]
     #[case(2024, 0, 1)]
     #[case(2023, 13, 22)]
@@ -396,6 +410,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2023, 0, 0)] // Invalid month 0
     #[case(2023, 13, 0)] // Invalid month 13
     #[case(2023, 1, 7)] // Invalid day of week 7
@@ -405,6 +420,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test first occurrence of different weekdays
     #[case(2023, 12, 0, 1, 3)] // First Sunday of December 2023
     #[case(2023, 12, 1, 1, 4)] // First Monday of December 2023
@@ -470,7 +486,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_nth_dow_nonexistent_fifth() {
         // February 2023 has 28 days - no 5th Sunday
         assert_eq!(nth_dow(2023, 2, 0, 5), None);
@@ -479,6 +496,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2023, 0, 0, 1)] // Invalid month 0
     #[case(2023, 13, 0, 1)] // Invalid month 13
     #[case(2023, 1, 7, 1)] // Invalid day of week 7
@@ -495,6 +513,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test regular weekdays (Monday-Friday)
     #[case(2024, 1, 1, 1)] // Monday -> same day
     #[case(2024, 1, 2, 2)] // Tuesday -> same day
@@ -542,6 +561,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2024, 0, 1)] // Invalid month 0
     #[case(2024, 13, 1)] // Invalid month 13
     #[case(2024, 1, 0)] // Invalid day 0

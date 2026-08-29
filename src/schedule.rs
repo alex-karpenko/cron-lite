@@ -520,6 +520,7 @@ mod tests {
     use std::time::Duration;
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case("* 0 0 1 1 *", "2024-01-01T00:00:21Z", "2024-01-01T00:00:21+00:00")]
     #[case("* 0 0 1 1 *", "2024-01-01T01:00:25Z", "2025-01-01T00:00:00+00:00")]
     #[case("*/5 * * * * *", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00+00:00")]
@@ -664,7 +665,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_year() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -692,7 +694,8 @@ mod tests {
         assert_eq!(year, None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_month() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -734,7 +737,8 @@ mod tests {
         assert_eq!(year, None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_dom() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -820,7 +824,8 @@ mod tests {
         assert_eq!(year, None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_hour() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -881,7 +886,8 @@ mod tests {
         assert_eq!(year, None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_minute() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -947,6 +953,7 @@ mod tests {
 
     #[template]
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case("* * * * * * *", "* * * * * * *")]
     #[case("* * * * * *", "* * * * * * *")]
     #[case("* * * * *", "0 * * * * * *")]
@@ -1558,6 +1565,26 @@ mod tests {
 
         #[rstest]
         #[timeout(Duration::from_secs(1))]
+        fn test_upcoming_partial_field_cascade_matches() {
+            use chrono::Utc;
+
+            // Schedule: 0 0 10 1 1 * (Jan 1 at 10:00)
+            // Starting at Jan 1 at 15:00: Year matches (2024), Month matches (1), Dom matches (1), Hour (10 < 15) fails!
+            let schedule = Schedule::new("0 0 10 1 1 *").unwrap();
+            let now = Utc.with_ymd_and_hms(2024, 1, 1, 15, 0, 0).unwrap();
+            let next = schedule.upcoming(&now).unwrap();
+            assert_eq!(next, Utc.with_ymd_and_hms(2025, 1, 1, 10, 0, 0).unwrap());
+
+            // Schedule: 0 0 0 5 1 * (Jan 5 at 00:00)
+            // Starting at Jan 10 at 00:00: Year matches (2024), Month matches (1), Dom (5 < 10) fails!
+            let schedule2 = Schedule::new("0 0 0 5 1 *").unwrap();
+            let now2 = Utc.with_ymd_and_hms(2024, 1, 10, 0, 0, 0).unwrap();
+            let next2 = schedule2.upcoming(&now2).unwrap();
+            assert_eq!(next2, Utc.with_ymd_and_hms(2025, 1, 5, 0, 0, 0).unwrap());
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter_every_year() {
             let schedule = Schedule::new("TZ=Asia/Shanghai 30 12 22 6 ?").unwrap();
             let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2021-01-12T13:13:01+00:00").unwrap());
@@ -1641,7 +1668,8 @@ mod tests {
             assert_eq!(set.len(), result.len());
         }
 
-        #[test]
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
         fn test_dst_fall_back_daily() {
             use chrono_tz::Europe::Kyiv;
 
@@ -1660,7 +1688,8 @@ mod tests {
             assert_eq!(occurrences[4], "2024-10-29T03:30:00+02:00");
         }
 
-        #[test]
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
         fn test_dst_fall_back_hourly() {
             use chrono_tz::Europe::Kyiv;
 
@@ -1678,7 +1707,8 @@ mod tests {
             assert_eq!(occurrences[3], "2024-10-27T04:30:00+02:00");
         }
 
-        #[test]
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
         fn test_dst_fall_back_without_tz_prefix() {
             use chrono_tz::Europe::Kyiv;
 
@@ -1697,7 +1727,8 @@ mod tests {
             assert_eq!(occurrences[4], "2024-10-29T03:30:00+02:00");
         }
 
-        #[test]
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
         fn test_dst_fall_back_annual() {
             use chrono_tz::Europe::Kyiv;
 
@@ -1707,7 +1738,8 @@ mod tests {
             assert_eq!(next.to_rfc3339(), "2024-10-27T03:30:00+03:00");
         }
 
-        #[test]
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
         fn test_sub_hour_dst_transition() {
             use chrono_tz::Australia::Lord_Howe;
 

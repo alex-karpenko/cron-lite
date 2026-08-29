@@ -71,9 +71,11 @@ mod tests {
     use super::*;
     use rstest::rstest;
     use rstest_reuse::{apply, template};
+    use std::time::Duration;
 
     #[template]
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(0, 5, 1, 0, vec![0, 1, 2, 3, 4, 5])]
     #[case(0, 5, 2, 0, vec![0, 2, 4])]
     #[case(0, 5, 5, 0 , vec![0, 5])]
@@ -115,6 +117,7 @@ mod tests {
 
     #[template]
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(10, 5, 1, 6)]
     #[case(0, 5, 0, 0)]
     #[case(10, 5, 1, 0)]
@@ -138,7 +141,8 @@ mod tests {
         SeriesWithStep::<u16>::new(min, max, step, start);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn series_boundary_no_overflow_u8() {
         assert_eq!(
             SeriesWithStep::<u8>::new(254, 255, 2, 254).collect::<Vec<_>>(),
@@ -146,7 +150,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn series_boundary_no_overflow_u16() {
         assert_eq!(
             SeriesWithStep::<u16>::new(65534, 65535, 2, 65534).collect::<Vec<_>>(),

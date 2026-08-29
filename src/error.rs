@@ -99,20 +99,25 @@ impl Display for CronError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
+    use std::time::Duration;
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_invalid_cron_schedule() {
         let error = CronError::InvalidCronSchedule("* * *".to_string());
         assert_eq!(error.to_string(), "invalid cron schedule: * * *");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_invalid_days_pattern() {
         let error = CronError::InvalidDaysPattern("31W".to_string());
         assert_eq!(error.to_string(), "invalid patterns of days of month or/and week: 31W");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_invalid_cron_pattern() {
         let error = CronError::InvalidCronPattern {
             pattern: "abc".to_string(),
@@ -121,7 +126,8 @@ mod tests {
         assert_eq!(error.to_string(), "minutes: invalid cron pattern: abc");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_invalid_digital_value() {
         let error = CronError::InvalidDigitalValue {
             value: "99".to_string(),
@@ -130,7 +136,8 @@ mod tests {
         assert_eq!(error.to_string(), "minutes: invalid digital value: 99");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_invalid_mnemonic_value() {
         let error = CronError::InvalidMnemonicValue {
             value: "FOO".to_string(),
@@ -139,7 +146,8 @@ mod tests {
         assert_eq!(error.to_string(), "months: invalid mnemonic value: FOO");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_invalid_day_of_week() {
         let error = CronError::InvalidDayOfWeekValue {
             value: "8".to_string(),
@@ -148,7 +156,8 @@ mod tests {
         assert_eq!(error.to_string(), "days of week: invalid day of week value: 8");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_invalid_range() {
         let error = CronError::InvalidRangeValue {
             value: "5-2".to_string(),
@@ -157,7 +166,8 @@ mod tests {
         assert_eq!(error.to_string(), "hours: invalid range pattern: 5-2");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_invalid_repeating() {
         let error = CronError::InvalidRepeatingPattern {
             pattern: "*/0".to_string(),
@@ -166,13 +176,15 @@ mod tests {
         assert_eq!(error.to_string(), "minutes: invalid repeating pattern: */0");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_invalid_tz() {
         let error = CronError::InvalidTimeZone("qqq".to_string());
         assert_eq!(error.to_string(), "invalid time zone: qqq");
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_too_many_pattern_values() {
         let error = CronError::TooManyPatternValues {
             field: "seconds".to_string(),
