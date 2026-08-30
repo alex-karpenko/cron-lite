@@ -507,12 +507,17 @@ fn sleep_thread_tx() -> &'static ControlChannel {
 fn next_instant<Tz: TimeZone>(now_nanos: i64, next: &DateTime<Tz>) -> Option<Instant> {
     let now_inst = Instant::now();
     let until_nanos = next.timestamp_nanos_opt()?;
-    let delta = until_nanos - now_nanos;
+    // Widen to i128 before subtracting: `now` and `next` are each valid i64 nanosecond
+    // timestamps, but when they're far apart (e.g. `next` near MAX_YEAR and `now` near
+    // MIN_YEAR) their difference can exceed i64::MAX/MIN and overflow a plain i64 subtraction.
+    let delta = i128::from(until_nanos) - i128::from(now_nanos);
 
     if delta < 0 {
         None
     } else {
-        now_inst.checked_add(Duration::from_nanos(delta as u64))
+        u64::try_from(delta)
+            .ok()
+            .and_then(|delta| now_inst.checked_add(Duration::from_nanos(delta)))
     }
 }
 
@@ -596,6 +601,35 @@ mod tests {
         assert!(instant.is_some());
         let delta = instant.unwrap().saturating_duration_since(Instant::now());
         assert!(delta <= Duration::from_secs(5) + Duration::from_millis(50));
+    }
+
+    // Regression tests for a debug-mode "attempt to subtract with overflow" panic: `now` and
+    // `next` are each valid i64 nanosecond timestamps on their own, but when they're far
+    // enough apart (e.g. `current` near the crate's MIN_YEAR and the schedule near MAX_YEAR)
+    // a plain `i64` subtraction of the two overflows i64::MAX/MIN.
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
+    fn test_next_instant_no_panic_for_far_future_timestamp() {
+        let now = Utc.with_ymd_and_hms(1700, 1, 1, 0, 0, 0).unwrap();
+        let next = Utc.with_ymd_and_hms(2260, 1, 1, 0, 0, 0).unwrap();
+        let now_nanos = now.timestamp_nanos_opt().unwrap();
+
+        let instant = next_instant(now_nanos, &next);
+
+        assert!(instant.is_some(), "instant={instant:?}");
+        assert!(instant.unwrap() > Instant::now());
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
+    fn test_next_instant_no_panic_for_far_past_next() {
+        let now = Utc.with_ymd_and_hms(2260, 1, 1, 0, 0, 0).unwrap();
+        let next = Utc.with_ymd_and_hms(1700, 1, 1, 0, 0, 0).unwrap();
+        let now_nanos = now.timestamp_nanos_opt().unwrap();
+
+        let instant = next_instant(now_nanos, &next);
+
+        assert!(instant.is_none(), "instant={instant:?}");
     }
 
     #[rstest]
