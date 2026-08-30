@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-08-30
+### Details
+#### Breaking changes
+- Harden parser against oversized input and tighten CronError API by @alex-karpenko in [#17](https://github.com/alex-karpenko/cron-lite/pull/17)
+
+#### Fixed
+- Fix relese workflow by @alex-karpenko
+
 ## [0.3.1] - 2026-03-13
 ### Details
 #### Breaking changes
@@ -54,6 +62,7 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.4.0]: https://github.com/alex-karpenko/cron-lite/compare/v0.3.1..v0.4.0
 [0.3.1]: https://github.com/alex-karpenko/cron-lite/compare/v0.3.0..v0.3.1
 [0.3.0]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.2..v0.3.0
 [0.2.2]: https://github.com/alex-karpenko/cron-lite/compare/v0.2.1..v0.2.2
