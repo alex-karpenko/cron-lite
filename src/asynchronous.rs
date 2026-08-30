@@ -603,6 +603,20 @@ mod tests {
         assert!(delta <= Duration::from_secs(5) + Duration::from_millis(50));
     }
 
+    #[rstest]
+    #[timeout(Duration::from_secs(3))]
+    fn test_next_instant_next_outside_nanosecond_range() {
+        // `next` is far enough in the future that it's outside chrono's nanosecond-representable
+        // range (roughly 1677..=2262), so `timestamp_nanos_opt()` returns `None` and `next_instant`
+        // must propagate that via its `?` early return instead of panicking or misbehaving.
+        let now = Utc::now().timestamp_nanos_opt().unwrap();
+        let next = Utc.with_ymd_and_hms(3000, 1, 1, 0, 0, 0).unwrap();
+
+        let instant = next_instant(now, &next);
+
+        assert!(instant.is_none(), "instant={instant:?}");
+    }
+
     // Regression tests for a debug-mode "attempt to subtract with overflow" panic: `now` and
     // `next` are each valid i64 nanosecond timestamps on their own, but when they're far
     // enough apart (e.g. `current` near the crate's MIN_YEAR and the schedule near MAX_YEAR)
