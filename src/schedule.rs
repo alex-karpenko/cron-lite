@@ -14,6 +14,33 @@ pub const MAX_YEAR: u16 = 2099;
 
 pub(crate) const MIN_YEAR_STR: &str = "1970";
 
+/// Classifies which of the day-of-month / day-of-week patterns should drive the "day"
+/// computation, given cron's DOM/DOW relationship rules: at least one of them must be
+/// indifferent (`*` or `?`) for a schedule to be valid. Shared between construction-time
+/// validation and the day-of-month lookup during upcoming-event calculation, so both
+/// stay in agreement if the relationship rules are ever changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DomDowRelation {
+    /// Day of month drives the day computation.
+    Dom,
+    /// Day of week drives the day computation.
+    Dow,
+    /// Both fields are constrained, or both are indifferent - invalid combination.
+    Invalid,
+}
+
+impl DomDowRelation {
+    fn classify(dom: &PatternItem, dow: &PatternItem) -> Self {
+        match (dom, dow) {
+            (PatternItem::Any, PatternItem::Any) => Self::Invalid,
+            (PatternItem::All, PatternItem::All | PatternItem::Any) => Self::Dom,
+            (PatternItem::All | PatternItem::Any, _) => Self::Dow,
+            (_, PatternItem::All | PatternItem::Any) => Self::Dom,
+            (_, _) => Self::Invalid,
+        }
+    }
+}
+
 /// Represents a cron schedule pattern with its methods.
 ///
 /// For cron schedule clarification and usage examples, please refer to the [crate documentation](crate).
@@ -34,42 +61,43 @@ pub struct Schedule {
 }
 
 impl Schedule {
-    /// Parses and validates provided `pattern` and constructs [`Schedule`] instance.
+    /// Parses and validates the provided `pattern` and constructs a [`Schedule`] instance.
     ///
-    /// Alternative way to construct [`Schedule`] is to use one of `try_from` or `from_str` methods .
+    /// An alternative way to construct a [`Schedule`] is to use one of the `try_from` or `from_str` methods.
     ///
-    /// Returns [`CronError`] in a case provided pattern is unparsable or has format errors.
-    pub fn new(pattern: impl Into<String>) -> Result<Self> {
-        let pattern = pattern.into();
-        let mut elements: Vec<&str> = pattern.split_whitespace().collect();
+    /// # Errors
+    /// Returns [`CronError`] if the provided pattern is unparsable or has format errors.
+    pub fn new(pattern: impl AsRef<str>) -> Result<Self> {
+        let pattern_str = pattern.as_ref();
+        let mut elements: Vec<&str> = pattern_str.split_whitespace().collect();
         #[cfg(feature = "tz")]
         let mut tz = None;
 
         // Parse and define TZ, if present
         #[cfg(feature = "tz")]
         if elements.len() >= 2 {
-            let tz_elements: Vec<&str> = elements[0].split('=').collect();
-            if tz_elements.len() == 2 && tz_elements[0].to_uppercase() == "TZ" {
-                let tz_str = tz_elements[1];
-                if let Ok(tz_value) = Tz::from_str(tz_str) {
-                    tz = Some(tz_value);
-                    elements.remove(0);
-                } else {
-                    return Err(CronError::InvalidTimeZone(tz_str.to_string()));
+            if let Some((prefix, tz_str)) = elements[0].split_once('=') {
+                if prefix.eq_ignore_ascii_case("tz") {
+                    if let Ok(tz_value) = Tz::from_str(tz_str) {
+                        tz = Some(tz_value);
+                        elements.remove(0);
+                    } else {
+                        return Err(CronError::InvalidTimeZone(tz_str.to_string()));
+                    }
                 }
             }
         }
 
         // Check the number of elements in the provided expression and augment it with defaults.
         if elements.len() == 1 {
-            // Check fo aliases
+            // Check for aliases
             match elements[0] {
                 "@yearly" | "@annually" => elements = vec!["0", "0", "0", "1", "1", "?", "*"],
                 "@monthly" => elements = vec!["0", "0", "0", "1", "*", "?", "*"],
                 "@weekly" => elements = vec!["0", "0", "0", "?", "*", "0", "*"],
                 "@daily" | "@midnight" => elements = vec!["0", "0", "0", "*", "*", "*", "*"],
                 "@hourly" => elements = vec!["0", "0", "*", "*", "*", "*", "*"],
-                _ => return Err(CronError::InvalidCronSchedule(pattern)),
+                _ => return Err(CronError::InvalidCronSchedule(pattern_str.to_owned())),
             }
         } else if elements.len() == 5 {
             elements.insert(0, "0");
@@ -77,7 +105,7 @@ impl Schedule {
         } else if elements.len() == 6 {
             elements.insert(6, "*");
         } else if elements.len() != 7 {
-            return Err(CronError::InvalidCronSchedule(pattern));
+            return Err(CronError::InvalidCronSchedule(pattern_str.to_owned()));
         }
 
         // Parse each element.
@@ -94,27 +122,24 @@ impl Schedule {
         };
 
         // Validate DOM and DOW relationship.
-        match (schedule.dom.pattern(), schedule.dow.pattern()) {
-            (PatternItem::Any, PatternItem::Any) => return Err(CronError::InvalidDaysPattern(pattern)),
-            (PatternItem::All, _) | (_, PatternItem::All) | (PatternItem::Any, _) | (_, PatternItem::Any) => {}
-            (_, _) => {
-                return Err(CronError::InvalidDaysPattern(pattern));
-            }
+        if DomDowRelation::classify(schedule.dom.pattern(), schedule.dow.pattern()) == DomDowRelation::Invalid {
+            return Err(CronError::InvalidDaysPattern(pattern_str.to_owned()));
         }
 
         Ok(schedule)
     }
 
-    /// Return time of the upcoming cron event, starting from the provided `current` value (inclusively).
+    /// Returns the time of the upcoming cron event, starting from the provided `current` value (inclusively).
     ///
-    /// If `tz` feature isn't enabled,
-    /// this method assumes that schedule timezone is the same as timezone of the provided `current` instance.
+    /// If the `tz` feature isn't enabled,
+    /// this method assumes that the schedule's timezone is the same as the timezone of the provided `current`
+    /// instance.
     ///
-    /// If `tz` feature is enabled and [schedule uses timezone](crate#schedule-with-timezone),
-    /// then method calculates time of the upcoming event with respect to the schedule's timezone:
-    /// - converts `current` into schedule timezone;
-    /// - calculates upcoming event time;
-    /// - converts obtained upcoming value back to the timezone of the `current` instance.
+    /// If the `tz` feature is enabled and the [schedule uses a timezone](crate#schedule-with-timezone),
+    /// then the method calculates the time of the upcoming event with respect to the schedule's timezone:
+    /// - converts `current` into the schedule's timezone;
+    /// - calculates the upcoming event's time;
+    /// - converts the obtained upcoming value back to the timezone of the `current` instance.
     ///
     /// Returns `None` if there is no time for the upcoming event.
     #[cfg(not(feature = "tz"))]
@@ -123,7 +148,19 @@ impl Schedule {
         self.upcoming_impl(current)
     }
 
-    /// Doc is above.
+    /// Returns the time of the upcoming cron event, starting from the provided `current` value (inclusively).
+    ///
+    /// If the `tz` feature isn't enabled,
+    /// this method assumes that the schedule's timezone is the same as the timezone of the provided `current`
+    /// instance.
+    ///
+    /// If the `tz` feature is enabled and the [schedule uses a timezone](crate#schedule-with-timezone),
+    /// then the method calculates the time of the upcoming event with respect to the schedule's timezone:
+    /// - converts `current` into the schedule's timezone;
+    /// - calculates the upcoming event's time;
+    /// - converts the obtained upcoming value back to the timezone of the `current` instance.
+    ///
+    /// Returns `None` if there is no time for the upcoming event.
     #[cfg(feature = "tz")]
     pub fn upcoming<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
         if let Some(schedule_tz) = &self.tz {
@@ -136,17 +173,13 @@ impl Schedule {
         }
     }
 
-    /// Return time of the upcoming cron event starting from (including) provided `current` value.
+    /// Returns the time of the upcoming cron event, starting from (and including) the provided `current` value.
     ///
-    /// Returns `None` if there is no upcoming event's time.
+    /// Returns `None` if there is no upcoming event.
     fn upcoming_impl<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
         // Normalize current time to the start of the whole second.
         let mut current = if current.nanosecond() > 0 {
-            current
-                .with_nanosecond(0)
-                .unwrap()
-                .checked_add_signed(TimeDelta::seconds(1))
-                .unwrap()
+            current.with_nanosecond(0)?.checked_add_signed(TimeDelta::seconds(1))?
         } else {
             current.clone()
         };
@@ -157,7 +190,7 @@ impl Schedule {
         let mut hour = Some(current.hour() as PatternValueType);
         let mut minute = Some(current.minute() as PatternValueType);
         let mut second = Some(current.second() as PatternValueType);
-        let mut first_iteration = true; // since we don't have `util` loop
+        let mut first_iteration = true; // since we don't have a `do-while` loop
 
         while year.is_none()
             || month.is_none()
@@ -169,7 +202,7 @@ impl Schedule {
         {
             first_iteration = false;
 
-            // Jump over to the next possible value is needed.
+            // Jump to the next possible value, if needed.
             if year.is_none() {
                 return None;
             } else if month.is_none() {
@@ -185,12 +218,12 @@ impl Schedule {
             }
 
             current = match current.timezone().with_ymd_and_hms(
-                year? as i32,
-                month? as u32,
-                dom? as u32,
-                hour? as u32,
-                minute? as u32,
-                second? as u32,
+                i32::from(year?),
+                u32::from(month?),
+                u32::from(dom?),
+                u32::from(hour?),
+                u32::from(minute?),
+                u32::from(second?),
             ) {
                 LocalResult::Single(updated_current) => updated_current,
                 LocalResult::Ambiguous(earliest, _latest) => earliest,
@@ -203,56 +236,67 @@ impl Schedule {
             // Calculate the next possible valid date/time from the current,
             // with leaping to the first day/hour/... when the current element was changed.
             year = self.year.next(&mut current);
-            if year.is_some() {
-                month = self.month.next(&mut current);
-                year = Some(current.year() as PatternValueType);
-                if month.is_some() {
-                    // Prepare day of month depending on DOM/DOW pattern types.
-                    dom = match (self.dom.pattern(), self.dow.pattern()) {
-                        (PatternItem::All, PatternItem::All) => self.dom.next(&mut current),
-                        (PatternItem::All, PatternItem::Any) => self.dom.next(&mut current),
-                        (PatternItem::All, _) => self.dow.next(&mut current),
-                        (PatternItem::Any, PatternItem::All) => self.dow.next(&mut current),
-                        (PatternItem::Any, PatternItem::Any) => unreachable!(),
-                        (PatternItem::Any, _) => self.dow.next(&mut current),
-                        (_, PatternItem::All) => self.dom.next(&mut current),
-                        (_, PatternItem::Any) => self.dom.next(&mut current),
-                        (_, _) => unreachable!(),
-                    };
-                    year = Some(current.year() as PatternValueType);
-                    month = Some(current.month() as PatternValueType);
-                    if dom.is_some() {
-                        hour = self.hour.next(&mut current);
-                        year = Some(current.year() as PatternValueType);
-                        month = Some(current.month() as PatternValueType);
-                        dom = Some(current.day() as PatternValueType);
-                        if hour.is_some() {
-                            minute = self.minute.next(&mut current);
-                            year = Some(current.year() as PatternValueType);
-                            month = Some(current.month() as PatternValueType);
-                            dom = Some(current.day() as PatternValueType);
-                            hour = Some(current.hour() as PatternValueType);
-                            if minute.is_some() {
-                                second = self.second.next(&mut current);
-                                year = Some(current.year() as PatternValueType);
-                                month = Some(current.month() as PatternValueType);
-                                dom = Some(current.day() as PatternValueType);
-                                hour = Some(current.hour() as PatternValueType);
-                                minute = Some(current.minute() as PatternValueType);
-                            }
-                        }
-                    }
+            month = if year.is_some() {
+                self.month.next(&mut current)
+            } else {
+                None
+            };
+            dom = if month.is_some() {
+                match DomDowRelation::classify(self.dom.pattern(), self.dow.pattern()) {
+                    DomDowRelation::Dom => self.dom.next(&mut current),
+                    DomDowRelation::Dow => self.dow.next(&mut current),
+                    DomDowRelation::Invalid => unreachable!(),
                 }
+            } else {
+                None
+            };
+            hour = if dom.is_some() {
+                self.hour.next(&mut current)
+            } else {
+                None
+            };
+            minute = if hour.is_some() {
+                self.minute.next(&mut current)
+            } else {
+                None
+            };
+            second = if minute.is_some() {
+                self.second.next(&mut current)
+            } else {
+                None
+            };
+
+            // Sync all matched fields with current datetime in case downstream leaps updated them
+            if second.is_some() {
+                year = Some(current.year() as PatternValueType);
+                month = Some(current.month() as PatternValueType);
+                dom = Some(current.day() as PatternValueType);
+                hour = Some(current.hour() as PatternValueType);
+                minute = Some(current.minute() as PatternValueType);
+            } else if minute.is_some() {
+                year = Some(current.year() as PatternValueType);
+                month = Some(current.month() as PatternValueType);
+                dom = Some(current.day() as PatternValueType);
+                hour = Some(current.hour() as PatternValueType);
+            } else if hour.is_some() {
+                year = Some(current.year() as PatternValueType);
+                month = Some(current.month() as PatternValueType);
+                dom = Some(current.day() as PatternValueType);
+            } else if dom.is_some() {
+                year = Some(current.year() as PatternValueType);
+                month = Some(current.month() as PatternValueType);
+            } else if month.is_some() {
+                year = Some(current.year() as PatternValueType);
             }
         }
 
         match current.timezone().with_ymd_and_hms(
-            year? as i32,
-            month? as u32,
-            dom? as u32,
-            hour? as u32,
-            minute? as u32,
-            second? as u32,
+            i32::from(year?),
+            u32::from(month?),
+            u32::from(dom?),
+            u32::from(hour?),
+            u32::from(minute?),
+            u32::from(second?),
         ) {
             LocalResult::Single(current) => Some(current),
             LocalResult::Ambiguous(earliest, _latest) => Some(earliest),
@@ -260,26 +304,26 @@ impl Schedule {
         }
     }
 
-    /// Returns iterator of events starting from `current` (inclusively).
+    /// Returns an iterator of events starting from `current` (inclusively).
     #[inline]
-    pub fn iter<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
+    pub fn iter<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> ScheduleIterator<Tz> {
         ScheduleIterator {
             schedule: self.clone(),
             next: self.upcoming(current),
         }
     }
 
-    /// Consumes [`Schedule`] and returns iterator of events starting from `current` (inclusively).
+    /// Consumes the [`Schedule`] and returns an iterator of events starting from `current` (inclusively).
     #[inline]
-    pub fn into_iter<Tz: TimeZone>(self, current: &DateTime<Tz>) -> impl Iterator<Item = DateTime<Tz>> {
+    pub fn into_iter<Tz: TimeZone>(self, current: &DateTime<Tz>) -> ScheduleIterator<Tz> {
         let next = self.upcoming(current);
         ScheduleIterator { schedule: self, next }
     }
 }
 
-/// Contains iterator state.
+/// Contains the iterator state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ScheduleIterator<Tz: TimeZone> {
+pub struct ScheduleIterator<Tz: TimeZone> {
     pub(crate) schedule: Schedule,
     pub(crate) next: Option<DateTime<Tz>>,
 }
@@ -312,14 +356,6 @@ impl TryFrom<String> for Schedule {
     type Error = CronError;
 
     fn try_from(value: String) -> Result<Self> {
-        Self::new(value)
-    }
-}
-
-impl TryFrom<&String> for Schedule {
-    type Error = CronError;
-
-    fn try_from(value: &String) -> Result<Self> {
         Self::new(value)
     }
 }
@@ -368,7 +404,7 @@ impl Display for Schedule {
     }
 }
 
-/// Increments current year and set all other elements to the first valid value.
+/// Increments the current year and sets all other elements to their first valid values.
 #[inline]
 fn inc_year(
     year: &mut Option<PatternValueType>,
@@ -393,7 +429,7 @@ fn inc_year(
     }
 }
 
-/// Increments current month and set all other elements to the first valid value.
+/// Increments the current month and sets all other elements to their first valid values.
 #[inline]
 fn inc_month(
     year: &mut Option<PatternValueType>,
@@ -409,15 +445,13 @@ fn inc_month(
         *hour = Some(0);
         *minute = Some(0);
         *second = Some(0);
-
-        *month
     } else {
         inc_year(year, month, dom, hour, minute, second)?;
-        *month
     }
+    *month
 }
 
-/// Increments current day of month and set all other elements to the first valid value.
+/// Increments the current day of month and sets all other elements to their first valid values.
 #[inline]
 fn inc_dom(
     year: &mut Option<PatternValueType>,
@@ -432,15 +466,13 @@ fn inc_dom(
         *hour = Some(0);
         *minute = Some(0);
         *second = Some(0);
-
-        *dom
     } else {
         inc_month(year, month, dom, hour, minute, second)?;
-        *dom
     }
+    *dom
 }
 
-/// Increments current hour and set all other elements to the first valid value.
+/// Increments the current hour and sets all other elements to their first valid values.
 #[inline]
 fn inc_hour(
     year: &mut Option<PatternValueType>,
@@ -454,15 +486,13 @@ fn inc_hour(
         *hour = Some((*hour)? + 1);
         *minute = Some(0);
         *second = Some(0);
-
-        *hour
     } else {
         inc_dom(year, month, dom, hour, minute, second)?;
-        *hour
     }
+    *hour
 }
 
-/// Increments current minute and set all other elements to the first valid value.
+/// Increments the current minute and sets all other elements to their first valid values.
 #[inline]
 fn inc_minute(
     year: &mut Option<PatternValueType>,
@@ -475,12 +505,10 @@ fn inc_minute(
     if (*minute)? < 59 {
         *minute = Some((*minute)? + 1);
         *second = Some(0);
-
-        *minute
     } else {
         inc_hour(year, month, dom, hour, minute, second)?;
-        *minute
     }
+    *minute
 }
 
 #[cfg(test)]
@@ -492,6 +520,7 @@ mod tests {
     use std::time::Duration;
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case("* 0 0 1 1 *", "2024-01-01T00:00:21Z", "2024-01-01T00:00:21+00:00")]
     #[case("* 0 0 1 1 *", "2024-01-01T01:00:25Z", "2025-01-01T00:00:00+00:00")]
     #[case("*/5 * * * * *", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00+00:00")]
@@ -586,6 +615,8 @@ mod tests {
     #[case("0 0 9 * * 1", "2024-01-01T09:00:01Z", "2024-01-08T09:00:00+00:00")]
     #[case("0 0 9 * * 1#1", "2024-04-12T00:00:00Z", "2024-05-06T09:00:00+00:00")]
     #[case("0 0 9 * * 6#4", "2024-11-30T09:00:00Z", "2024-12-28T09:00:00+00:00")]
+    #[case("0 0 9 * * 5#5", "2024-03-01T00:00:00Z", "2024-03-29T09:00:00+00:00")]
+    #[case("0 0 9 * * 5#5", "2024-03-29T09:00:01Z", "2024-05-31T09:00:00+00:00")]
     #[case("0 0 9-17 * * 1-5", "2024-01-01T08:00:00Z", "2024-01-01T09:00:00+00:00")]
     #[case("0 0 9-17 * * 1-5", "2024-01-01T17:00:01Z", "2024-01-02T09:00:00+00:00")]
     #[case("0 15,45 9-17 * * 1-5", "2024-01-01T09:00:00Z", "2024-01-01T09:15:00+00:00")]
@@ -634,7 +665,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_year() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -662,7 +694,8 @@ mod tests {
         assert_eq!(year, None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_month() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -704,7 +737,8 @@ mod tests {
         assert_eq!(year, None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_dom() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -790,7 +824,8 @@ mod tests {
         assert_eq!(year, None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_hour() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -851,7 +886,8 @@ mod tests {
         assert_eq!(year, None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_inc_minute() {
         let mut year = Some(2024);
         let mut month = Some(1);
@@ -917,6 +953,7 @@ mod tests {
 
     #[template]
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case("* * * * * * *", "* * * * * * *")]
     #[case("* * * * * *", "* * * * * * *")]
     #[case("* * * * *", "0 * * * * * *")]
@@ -950,15 +987,18 @@ mod tests {
     }
 
     #[apply(valid_schedules_to_test)]
+    // rstest's #[case] expansion references `_expected` by name even though this test body
+    // doesn't need it, which trips clippy's used-underscore-binding lint as a false positive.
+    #[allow(clippy::used_underscore_binding)]
     fn test_try_from_string(#[case] input: &str, #[case] _expected: &str) {
         // &str
         let schedule1 = Schedule::new(input).unwrap();
         let schedule2 = Schedule::try_from(input).unwrap();
         assert_eq!(schedule1, schedule2);
 
-        // &String
+        // &str via String.as_str()
         let tst_string = String::from(input);
-        let schedule2 = Schedule::try_from(&tst_string).unwrap();
+        let schedule2 = Schedule::try_from(tst_string.as_str()).unwrap();
         assert_eq!(schedule1, schedule2);
 
         // String
@@ -1199,15 +1239,18 @@ mod tests {
         }
 
         #[apply(valid_schedules_to_test)]
+        // rstest's #[case] expansion references `_expected` by name even though this test body
+        // doesn't need it, which trips clippy's used-underscore-binding lint as a false positive.
+        #[allow(clippy::used_underscore_binding)]
         fn test_try_from_string(#[case] input: &str, #[case] _expected: &str) {
             // &str
             let schedule1 = Schedule::new(input).unwrap();
             let schedule2 = Schedule::try_from(input).unwrap();
             assert_eq!(schedule1, schedule2);
 
-            // &String
+            // &str via String.as_str()
             let tst_string = String::from(input);
-            let schedule2 = Schedule::try_from(&tst_string).unwrap();
+            let schedule2 = Schedule::try_from(tst_string.as_str()).unwrap();
             assert_eq!(schedule1, schedule2);
 
             // String
@@ -1256,6 +1299,13 @@ mod tests {
         #[case("TZ=EET @hourly", "2000-10-29T00:00:01Z", "2000-10-29T02:00:00+00:00")] // 9
         #[case("TZ=EET @hourly", "2000-10-29T01:00:01Z", "2000-10-29T02:00:00+00:00")] // 10
         #[case("TZ=EET @hourly", "2000-10-29T02:00:01Z", "2000-10-29T03:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3-5 * * *", "2025-03-30T00:00:00Z", "2025-03-30T01:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 * * * *", "2025-03-30T00:00:01Z", "2025-03-30T01:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3 * * *", "2025-03-30T00:00:00Z", "2025-03-31T00:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3/2 * * *", "2025-03-30T00:00:00Z", "2025-03-30T02:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 2-6/2 * * *", "2025-03-30T00:00:01Z", "2025-03-30T01:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3,4 * * *", "2025-03-30T00:00:00Z", "2025-03-30T01:00:00+00:00")]
+        #[case("TZ=Europe/Kyiv 0 3,5 * * *", "2025-03-30T00:00:00Z", "2025-03-30T02:00:00+00:00")]
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
             let schedule = Schedule::new(pattern).unwrap();
@@ -1515,6 +1565,26 @@ mod tests {
 
         #[rstest]
         #[timeout(Duration::from_secs(1))]
+        fn test_upcoming_partial_field_cascade_matches() {
+            use chrono::Utc;
+
+            // Schedule: 0 0 10 1 1 * (Jan 1 at 10:00)
+            // Starting at Jan 1 at 15:00: Year matches (2024), Month matches (1), Dom matches (1), Hour (10 < 15) fails!
+            let schedule = Schedule::new("0 0 10 1 1 *").unwrap();
+            let now = Utc.with_ymd_and_hms(2024, 1, 1, 15, 0, 0).unwrap();
+            let next = schedule.upcoming(&now).unwrap();
+            assert_eq!(next, Utc.with_ymd_and_hms(2025, 1, 1, 10, 0, 0).unwrap());
+
+            // Schedule: 0 0 0 5 1 * (Jan 5 at 00:00)
+            // Starting at Jan 10 at 00:00: Year matches (2024), Month matches (1), Dom (5 < 10) fails!
+            let schedule2 = Schedule::new("0 0 0 5 1 *").unwrap();
+            let now2 = Utc.with_ymd_and_hms(2024, 1, 10, 0, 0, 0).unwrap();
+            let next2 = schedule2.upcoming(&now2).unwrap();
+            assert_eq!(next2, Utc.with_ymd_and_hms(2025, 1, 5, 0, 0, 0).unwrap());
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter_every_year() {
             let schedule = Schedule::new("TZ=Asia/Shanghai 30 12 22 6 ?").unwrap();
             let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2021-01-12T13:13:01+00:00").unwrap());
@@ -1596,6 +1666,90 @@ mod tests {
             let mut set = BTreeSet::new();
             set.extend(&result);
             assert_eq!(set.len(), result.len());
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_dst_fall_back_daily() {
+            use chrono_tz::Europe::Kyiv;
+
+            let schedule = Schedule::new("TZ=Europe/Kyiv 0 30 3 * * *").unwrap();
+            let mut current = Kyiv.with_ymd_and_hms(2024, 10, 25, 0, 0, 0).unwrap();
+            let mut occurrences = Vec::new();
+            for _ in 0..5 {
+                let next = schedule.upcoming(&current).unwrap();
+                occurrences.push(next.to_rfc3339());
+                current = next + chrono::Duration::seconds(1);
+            }
+            assert_eq!(occurrences[0], "2024-10-25T03:30:00+03:00");
+            assert_eq!(occurrences[1], "2024-10-26T03:30:00+03:00");
+            assert_eq!(occurrences[2], "2024-10-27T03:30:00+03:00");
+            assert_eq!(occurrences[3], "2024-10-28T03:30:00+02:00");
+            assert_eq!(occurrences[4], "2024-10-29T03:30:00+02:00");
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_dst_fall_back_hourly() {
+            use chrono_tz::Europe::Kyiv;
+
+            let schedule = Schedule::new("TZ=Europe/Kyiv 0 30 * * * *").unwrap();
+            let mut current = Kyiv.with_ymd_and_hms(2024, 10, 27, 1, 0, 0).unwrap();
+            let mut occurrences = Vec::new();
+            for _ in 0..4 {
+                let next = schedule.upcoming(&current).unwrap();
+                occurrences.push(next.to_rfc3339());
+                current = next + chrono::Duration::seconds(1);
+            }
+            assert_eq!(occurrences[0], "2024-10-27T01:30:00+03:00");
+            assert_eq!(occurrences[1], "2024-10-27T02:30:00+03:00");
+            assert_eq!(occurrences[2], "2024-10-27T03:30:00+03:00");
+            assert_eq!(occurrences[3], "2024-10-27T04:30:00+02:00");
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_dst_fall_back_without_tz_prefix() {
+            use chrono_tz::Europe::Kyiv;
+
+            let schedule = Schedule::new("0 30 3 * * *").unwrap();
+            let mut current = Kyiv.with_ymd_and_hms(2024, 10, 25, 0, 0, 0).unwrap();
+            let mut occurrences = Vec::new();
+            for _ in 0..5 {
+                let next = schedule.upcoming(&current).unwrap();
+                occurrences.push(next.to_rfc3339());
+                current = next + chrono::Duration::seconds(1);
+            }
+            assert_eq!(occurrences[0], "2024-10-25T03:30:00+03:00");
+            assert_eq!(occurrences[1], "2024-10-26T03:30:00+03:00");
+            assert_eq!(occurrences[2], "2024-10-27T03:30:00+03:00");
+            assert_eq!(occurrences[3], "2024-10-28T03:30:00+02:00");
+            assert_eq!(occurrences[4], "2024-10-29T03:30:00+02:00");
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_dst_fall_back_annual() {
+            use chrono_tz::Europe::Kyiv;
+
+            let schedule = Schedule::new("TZ=Europe/Kyiv 0 30 3 27 10 * *").unwrap();
+            let current = Kyiv.with_ymd_and_hms(2024, 10, 25, 0, 0, 0).unwrap();
+            let next = schedule.upcoming(&current).unwrap();
+            assert_eq!(next.to_rfc3339(), "2024-10-27T03:30:00+03:00");
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        fn test_sub_hour_dst_transition() {
+            use chrono_tz::Australia::Lord_Howe;
+
+            // Lord Howe transitions +11:00 -> +10:30 (30 min shift)
+            let schedule = Schedule::new("TZ=Australia/Lord_Howe 0 45 * * * *").unwrap();
+            let current = Lord_Howe.with_ymd_and_hms(2024, 4, 7, 0, 0, 0).unwrap();
+            let mut iter = schedule.iter(&current);
+            let next1 = iter.next().unwrap();
+            let next2 = iter.next().unwrap();
+            assert!(next2 > next1);
         }
     }
 }

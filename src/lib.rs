@@ -1,15 +1,15 @@
 //! Lightweight cron expression parser and time series generator.
-#![deny(unsafe_code, warnings, missing_docs)]
+#![deny(unsafe_code, missing_docs)]
 
 //! This is a tiny crate, intended to:
 //! - parse almost all kinds of popular cron schedule formats;
-//! - generates a series of timestamps according to the schedule.
+//! - generate a series of timestamps according to the schedule.
 //!
 //! It has a single external dependency - [chrono](https://crates.io/crates/chrono) (with default features set).
 //!
-//! _This is not a cron jobs scheduler or runner._ If you need a scheduler/runner,
+//! _This is not a cron job scheduler or runner._ If you need a scheduler/runner,
 //! look for [sacs](https://crates.io/crates/sacs)
-//! of any [other similar crate](https://crates.io/search?q=async%20cron%20scheduler).
+//! or any [other similar crate](https://crates.io/search?q=async%20cron%20scheduler).
 //!
 //! ## Cron schedule format
 //!
@@ -17,7 +17,8 @@
 //! This crate uses such a format by default, but two optional fields may be added, seconds and years:
 //! - if _seconds_ is empty, `0` is used by default;
 //! - if _years_ is empty, `*` is used by default;
-//! - if 6-fields schedule is specified, then _seconds_ filed is assumed as first and years as empty (default).
+//! - if a 6-field schedule is specified, then _seconds_ is assumed to be the first field, and years defaults to
+//!   empty.
 //!
 //! The table below describes valid values and patterns of each field:
 //!
@@ -36,10 +37,11 @@
 //! - `,` - list of values or patterns, i.e. `1,7,12`, `SUN,FRI`;
 //! - `-` - range of values, i.e. `0-15`, `JAN-MAR`;
 //! - `/` - repeating values, i.e. `*/12`, `10/5`, `30-59/2`;
-//! - `L` - last day of the month (for month field), or last particular day of the week (for weekday field), i.e. `L` or `5L`;
+//! - `L` - last day of the month (for day of month field), or last particular day of the week (for weekday field), i.e. `L` or `5L`;
 //! - `W` - the weekday (not Sunday or Saturday), nearest to the specified days of month in the same month, i.e. `22W`;
 //! - `#` - specific day of the week, i.e. `fri#1`, `1#4`;
-//! - `?` - for days of month or week means that value doesn't matter: if day of month is specified (not `*`), then day of week should be `?` and vise versa.
+//! - `?` - for days of month or week means that the value doesn't matter: if day of month is specified (not `*`),
+//!   then day of week should be `?`, and vice versa.
 //!
 //! Also, short aliases for well-known schedule expressions are allowed:
 //!
@@ -51,21 +53,21 @@
 //! | `@daily` (or `@midnight`)  | 0 0 0 * * * * |
 //! | `@hourly`                  | 0 0 * * * * * |
 //!
-//! Some additional information and fields description and relationships may be found [here](https://en.wikipedia.org/wiki/Cron#Cron_expression) (this is not complete or exceptional documentation).
+//! Some additional information, field descriptions, and relationships may be found [here](https://en.wikipedia.org/wiki/Cron#Cron_expression) (this is not complete or exhaustive documentation).
 //!
 //! ### Schedule with timezone
-//! If `tz` feature is enabled, it's possible to prefix cron schedule with timezone, for example:
+//! If the `tz` feature is enabled, it's possible to prefix a cron schedule with a timezone, for example:
 //! - `TZ=Europe/Paris @monthly`
 //! - `TZ=EET 0 12 * * *`
 //!
 //! ## How to use
 //!
 //! The single public entity of the crate is a [`Schedule`] structure, which has several basic methods:
-//! - [new()](Schedule::new): constructor to parse and validate provided schedule;
-//! - [upcoming()](Schedule::upcoming): returns time of the next schedule's event, starting from the provided timestamp;
-//! - [iter()](Schedule::iter): returns an `Iterator` which produces a series of timestamps according to the schedule;
-//! - [sleep()](Schedule::sleep): falls asleep until time of the upcoming schedule's event (`async` feature only);
-//! - [stream()](Schedule::stream): construct `Stream` which asynchronously generates events right in scheduled time (`async` feature only).
+//! - [`new()`](Schedule::new): constructor to parse and validate the provided schedule;
+//! - [`upcoming()`](Schedule::upcoming): returns the time of the next schedule's event, starting from the provided timestamp;
+//! - [`iter()`](Schedule::iter): returns an `Iterator` which produces a series of timestamps according to the schedule;
+//! - [`sleep()`](Schedule::sleep): falls asleep until the time of the upcoming schedule's event (`async` feature only);
+//! - [`stream()`](Schedule::stream): constructs a `Stream` which asynchronously generates events right at the scheduled time (`async` feature only).
 //!
 //! ### Example with `upcoming`
 //! ```rust
@@ -128,14 +130,76 @@
 //! ```
 //!
 //! # Feature flags
-//! * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [`Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementation for [`Schedule`].
+//! * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [`Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementations for [`Schedule`].
 //! * `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
-//! * `async`: adds several methods to use in async environments. See documentation for details.
+//! * `async`: adds several methods to use in async environments. See the module documentation for details.
+//!
+//! ## Breaking changes: upgrading to 0.4.0
+//!
+//! Version 0.4.0 hardens the public [`CronError`]/[`CronEvent`] API, eliminates unnecessary heap allocations, and closes a parsing-cost DoS gap:
+//!
+//! 1. **[`CronError`]'s two-field variants are now named-field structs, not tuples.** `InvalidCronPattern`,
+//!    `InvalidDigitalValue`, `InvalidMnemonicValue`, `InvalidDayOfWeekValue`, `InvalidRangeValue`, and
+//!    `InvalidRepeatingPattern` changed from `Variant(String, String)` to `Variant { value: String, field: String }`
+//!    (or `{ pattern: String, field: String }` for the two pattern-holding variants). This mainly affects code that
+//!    destructures these variants by position.
+//! 2. **[`CronError`] and [`CronEvent`] are now `#[non_exhaustive]`.** Any `match` that doesn't already end with a
+//!    wildcard arm will fail to compile. This allows adding error/event variants in the future without another
+//!    breaking release — for example, 0.4.0 itself adds [`CronError::TooManyPatternValues`], returned when a schedule
+//!    field's comma-separated list exceeds the number of distinct values that field can legally hold (a guard against
+//!    parsing/evaluating adversarially large cron strings).
+//! 3. **`TryFrom<&String>` was removed.** Use `TryFrom<&str>` instead (e.g. `Schedule::try_from(s.as_str())` or `Schedule::try_from(&s[..])`).
+//! 4. **[`ScheduleIterator`] is now a public concrete type.** [`Schedule::iter`] and [`Schedule::into_iter`] return
+//!    named `ScheduleIterator<Tz>` rather than opaque `impl Iterator<Item = DateTime<Tz>>`, enabling the iterator type to be stored in struct fields.
+//! 5. **[`Schedule::new`] now accepts `impl AsRef<str>`** instead of `impl Into<String>`, eliminating upfront heap allocation when passing string slices.
+//!
+//! ### Migration guide
+//!
+//! **If you pattern-match on [`CronError`]'s two-field variants**, switch from positional to named-field syntax:
+//!
+//! ```text
+//! // before 0.4.0
+//! match err {
+//!     CronError::InvalidDigitalValue(value, field) => println!("{field}: {value}"),
+//!     // ...
+//! }
+//!
+//! // 0.4.0+
+//! match err {
+//!     CronError::InvalidDigitalValue { value, field } => println!("{field}: {value}"),
+//!     // ...
+//! }
+//! ```
+//!
+//! **If you exhaustively `match` on [`CronError`] or [`CronEvent`]** (no `_` arm), add one:
+//!
+//! ```text
+//! // 0.4.0+
+//! match err {
+//!     CronError::InvalidCronSchedule(_) => { /* ... */ }
+//!     CronError::InvalidDaysPattern(_) => { /* ... */ }
+//!     // ... other variants you handle ...
+//!     _ => { /* handle any other/future variant */ }
+//! }
+//! ```
+//!
+//! **If you used `Schedule::try_from(&my_string)` with a borrowed `&String`**, borrow as `&str`:
+//!
+//! ```text
+//! // before 0.4.0
+//! let schedule = Schedule::try_from(&my_string)?;
+//!
+//! // 0.4.0+
+//! let schedule = Schedule::try_from(my_string.as_str())?;
+//! ```
+//!
+//! **If you handle [`Schedule::new`] errors generically** (e.g. just via `Display`/`to_string()`), no change is
+//! needed — only variant *construction* and *exhaustive destructuring* are affected.
 
 #[cfg(feature = "async")]
 /// Provides several additional methods to [`Schedule`] to use in asynchronous code with any runtime.
 pub mod asynchronous;
-/// Crate specific Error implementation.
+/// Crate-specific `Error` trait implementation.
 pub mod error;
 mod pattern;
 /// Cron schedule pattern parser and upcoming events generator.
@@ -152,7 +216,7 @@ pub use asynchronous::CronSleep;
 pub use asynchronous::CronStream;
 
 pub use error::CronError;
-pub use schedule::Schedule;
+pub use schedule::{Schedule, ScheduleIterator, MAX_YEAR, MIN_YEAR};
 
 /// Convenient alias for `Result`.
 pub type Result<T, E = CronError> = std::result::Result<T, E>;

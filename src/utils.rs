@@ -2,47 +2,35 @@
 use crate::pattern::PatternValueType;
 use std::cmp::Ordering;
 
-/// Converts string into unsigned number with bounds validation.
-pub(crate) fn parse_digital_value(
-    input: &str,
-    min: PatternValueType,
-    max: PatternValueType,
-) -> Option<PatternValueType> {
-    let value = input.parse::<u16>();
-    if let Ok(value) = value {
-        if value < min || value > max {
-            None
-        } else {
-            Some(value)
-        }
-    } else {
-        None
-    }
+/// Converts a string into an unsigned number with bounds validation.
+pub fn parse_digital_value(input: &str, min: PatternValueType, max: PatternValueType) -> Option<PatternValueType> {
+    input.parse::<u16>().ok().filter(|&v| (min..=max).contains(&v))
 }
 
-/// Converts string with mnemonic value representation into unsigned number.
-pub(crate) fn parse_string_value(input: &str, values: &[&str]) -> Option<PatternValueType> {
+/// Converts a string with a mnemonic value representation into an unsigned number.
+pub fn parse_string_value(input: &str, values: &[&str]) -> Option<PatternValueType> {
     if input.is_empty() {
         None
     } else {
         values
             .iter()
-            .position(|&x| x.to_uppercase() == input.to_uppercase())
+            .position(|&x| x.eq_ignore_ascii_case(input))
             .map(|i| i as PatternValueType)
     }
 }
 
-/// Returns `true` if provided year is leap.
+/// Returns `true` if the provided year is a leap year.
 #[inline]
-pub(crate) fn is_leap_year(year: PatternValueType) -> bool {
+pub const fn is_leap_year(year: PatternValueType) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
-/// Returns number of days in specified month.
-pub(crate) fn days_in_month(year: PatternValueType, month: PatternValueType) -> PatternValueType {
-    if month == 0 || month > 12 {
-        panic!("Invalid month: {month}");
-    }
+/// Returns the number of days in the specified month.
+///
+/// # Panics
+/// Panics if `month` is 0 or > 12. Validated by `Pattern::parse` before call.
+pub fn days_in_month(year: PatternValueType, month: PatternValueType) -> PatternValueType {
+    assert!(!(month == 0 || month > 12), "Invalid month: {month}");
 
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -53,11 +41,15 @@ pub(crate) fn days_in_month(year: PatternValueType, month: PatternValueType) -> 
     }
 }
 
-/// Calculates day of week for specified date.
-pub(crate) fn day_of_week(year: PatternValueType, month: PatternValueType, day: PatternValueType) -> PatternValueType {
-    if day == 0 || month == 0 || month > 12 || day > days_in_month(year, month) {
-        panic!("Invalid date: {year:04}-{month:02}-{day:02}");
-    }
+/// Calculates the day of the week for the specified date.
+///
+/// # Panics
+/// Panics if date is out of range. Validated before call.
+pub fn day_of_week(year: PatternValueType, month: PatternValueType, day: PatternValueType) -> PatternValueType {
+    assert!(
+        !(day == 0 || month == 0 || month > 12 || day > days_in_month(year, month)),
+        "Invalid date: {year:04}-{month:02}-{day:02}"
+    );
 
     let month_offset: PatternValueType = if is_leap_year(year) {
         [0, 3, 4, 0, 2, 5, 0, 3, 6, 1, 4, 6]
@@ -70,11 +62,15 @@ pub(crate) fn day_of_week(year: PatternValueType, month: PatternValueType, day: 
     ((day + month_offset + 5 * (year % 4) + 4 * (year % 100) + 6 * (year % 400)) % 7) as PatternValueType
 }
 
-/// Returns day in the month for the last specified day of the week.
-pub(crate) fn last_dow(year: PatternValueType, month: PatternValueType, dow: PatternValueType) -> PatternValueType {
-    if month == 0 || month > 12 || dow > 6 {
-        panic!("Invalid month or day of week: {month:02}/{dow}");
-    }
+/// Returns the day in the month for the last specified day of the week.
+///
+/// # Panics
+/// Panics if month or dow is invalid. Validated before call.
+pub fn last_dow(year: PatternValueType, month: PatternValueType, dow: PatternValueType) -> PatternValueType {
+    assert!(
+        !(month == 0 || month > 12 || dow > 6),
+        "Invalid month or day of week: {month:02}/{dow}"
+    );
 
     let mut last_day = days_in_month(year, month);
 
@@ -85,16 +81,20 @@ pub(crate) fn last_dow(year: PatternValueType, month: PatternValueType, dow: Pat
     last_day
 }
 
-/// Returns date (day in the month) of the specified N-th day of the week.
-pub(crate) fn nth_dow(
+/// Returns the date (day in the month) of the specified N-th day of the week, or `None` if it does not exist in the month.
+///
+/// # Panics
+/// Panics if month, dow, or nth is invalid. Validated before call.
+pub fn nth_dow(
     year: PatternValueType,
     month: PatternValueType,
     dow: PatternValueType,
     n: PatternValueType,
-) -> PatternValueType {
-    if month == 0 || month > 12 || dow > 6 || n == 0 || n > 4 {
-        panic!("Invalid month, day of week or nth occurrence: {month:02}/{dow}/{n}");
-    }
+) -> Option<PatternValueType> {
+    assert!(
+        !(month == 0 || month > 12 || dow > 6 || n == 0 || n > 5),
+        "Invalid month, day of week or nth occurrence: {month:02}/{dow}/{n}"
+    );
 
     let first_dow = day_of_week(year, month, 1);
 
@@ -107,21 +107,21 @@ pub(crate) fn nth_dow(
     }
 
     if day > days_in_month(year, month) {
-        panic!("Invalid date: {year:04}-{month:02}-{day:02}");
+        None
+    } else {
+        Some(day)
     }
-
-    day
 }
 
-/// Returns date of the weekday (not Sundays or Saturday) nearest to the specified date in the same month.
-pub(crate) fn nearest_weekday(
-    year: PatternValueType,
-    month: PatternValueType,
-    day: PatternValueType,
-) -> PatternValueType {
-    if day == 0 || month == 0 || month > 12 || day > days_in_month(year, month) {
-        panic!("Invalid date: {year:04}-{month:02}-{day:02}");
-    }
+/// Returns the date of the weekday (not Sunday or Saturday) nearest to the specified date in the same month.
+///
+/// # Panics
+/// Panics if date is invalid. Validated before call.
+pub fn nearest_weekday(year: PatternValueType, month: PatternValueType, day: PatternValueType) -> PatternValueType {
+    assert!(
+        !(day == 0 || month == 0 || month > 12 || day > days_in_month(year, month)),
+        "Invalid date: {year:04}-{month:02}-{day:02}"
+    );
 
     let dow = day_of_week(year, month, day);
     let days_in_month = days_in_month(year, month);
@@ -130,14 +130,14 @@ pub(crate) fn nearest_weekday(
     if dow > 0 && dow < 6 {
         day
     } else if dow == 0 {
-        // sunday
+        // Sunday
         if day == days_in_month {
             day - 2
         } else {
             day + 1
         }
     } else {
-        // saturday
+        // Saturday
         if day > 1 {
             day - 1
         } else {
@@ -152,24 +152,28 @@ mod tests {
     use rstest::rstest;
     use std::time::Duration;
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_valid_value_within_range() {
         assert_eq!(parse_digital_value("5", 0, 10), Some(5));
         assert_eq!(parse_digital_value("0", 0, 10), Some(0));
         assert_eq!(parse_digital_value("10", 0, 10), Some(10));
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_value_below_minimum() {
         assert_eq!(parse_digital_value("5", 10, 20), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_value_above_maximum() {
         assert_eq!(parse_digital_value("25", 0, 20), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_invalid_input() {
         assert_eq!(parse_digital_value("abc", 0, 10), None);
         assert_eq!(parse_digital_value("", 0, 10), None);
@@ -177,7 +181,8 @@ mod tests {
         assert_eq!(parse_digital_value("1.5", 0, 10), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_digital_value_edge_cases() {
         // Test with min equal to max
         assert_eq!(parse_digital_value("5", 5, 5), Some(5));
@@ -188,7 +193,8 @@ mod tests {
         assert_eq!(parse_digital_value("65535", 0, 65535), Some(65535));
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_string_value_regular() {
         // Test data
         let test_array = &[
@@ -221,13 +227,23 @@ mod tests {
         assert_eq!(parse_string_value("dec", months), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_string_value_empty_array() {
         let empty_array: &[&str] = &[];
         assert_eq!(parse_string_value("test", empty_array), None);
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn parse_string_value_non_ascii() {
+        let array = &["jan", "feb", "mar"];
+        assert_eq!(parse_string_value("j\u{00e4}n", array), None);
+        assert_eq!(parse_string_value("JAN", array), Some(0));
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn parse_string_value_whitespace() {
         let array = &["test", "value"];
         assert_eq!(parse_string_value(" test ", array), None);
@@ -235,6 +251,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test leap years divisible by 4 but not 100
     #[case(2024, true)]
     #[case(1996, true)]
@@ -257,6 +274,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test months with 31 days
     #[case(2023, 1, 31)] // January
     #[case(2023, 3, 31)] // March
@@ -288,6 +306,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2023, 0)]
     #[case(2023, 13)]
     #[should_panic(expected = "Invalid month")]
@@ -296,6 +315,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test regular days
     #[case(2023, 12, 25, 1)] // Monday
     #[case(2024, 1, 1, 1)] // Monday
@@ -330,6 +350,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2023, 2, 29)]
     #[case(2024, 0, 1)]
     #[case(2023, 13, 22)]
@@ -389,6 +410,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2023, 0, 0)] // Invalid month 0
     #[case(2023, 13, 0)] // Invalid month 13
     #[case(2023, 1, 7)] // Invalid day of week 7
@@ -398,6 +420,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test first occurrence of different weekdays
     #[case(2023, 12, 0, 1, 3)] // First Sunday of December 2023
     #[case(2023, 12, 1, 1, 4)] // First Monday of December 2023
@@ -425,6 +448,10 @@ mod tests {
     #[case(2024, 1, 5, 3, 19)]
     #[case(2024, 1, 6, 3, 20)]
     #[case(2024, 1, 0, 3, 21)]
+    // 5th occurrence cases
+    #[case(2023, 12, 0, 5, 31)] // Fifth Sunday of December 2023
+    #[case(2024, 3, 5, 5, 29)] // Fifth Friday of March 2024
+    #[case(2024, 5, 4, 5, 30)] // Fifth Thursday of May 2024
 
     fn test_nth_dow(
         #[case] y: PatternValueType,
@@ -435,7 +462,7 @@ mod tests {
     ) {
         assert_eq!(
             nth_dow(y, m, dow, n),
-            expected,
+            Some(expected),
             "{}{} {} of {}-{:02} should be {}",
             n,
             match n {
@@ -460,13 +487,21 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_nth_dow_nonexistent_fifth() {
+        // February 2023 has 28 days - no 5th Sunday
+        assert_eq!(nth_dow(2023, 2, 0, 5), None);
+        // February 2024 has 29 days - 5th Friday doesn't exist
+        assert_eq!(nth_dow(2024, 2, 5, 5), None);
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2023, 0, 0, 1)] // Invalid month 0
     #[case(2023, 13, 0, 1)] // Invalid month 13
     #[case(2023, 1, 7, 1)] // Invalid day of week 7
     #[case(2023, 1, 0, 0)] // Invalid nth 0
-    #[case(2023, 1, 0, 5)] // Invalid nth 5
     #[case(2023, 1, 0, 6)] // Invalid nth 6
-    #[case(2023, 12, 0, 6)] // Fifth Sunday of December 2023 (doesn't exist)
     #[should_panic(expected = "Invalid month, day of week or nth occurrence:")]
     fn test_nth_dow_invalid(
         #[case] y: PatternValueType,
@@ -478,6 +513,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Test regular weekdays (Monday-Friday)
     #[case(2024, 1, 1, 1)] // Monday -> same day
     #[case(2024, 1, 2, 2)] // Tuesday -> same day
@@ -525,6 +561,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(2024, 0, 1)] // Invalid month 0
     #[case(2024, 13, 1)] // Invalid month 13
     #[case(2024, 1, 0)] // Invalid day 0

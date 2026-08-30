@@ -4,11 +4,73 @@ use crate::{
     utils::{self, days_in_month},
     CronError, Result,
 };
-use chrono::{DateTime, Datelike, TimeZone, Timelike};
-use std::{collections::BTreeSet, fmt::Display};
+use chrono::{DateTime, Datelike, LocalResult, TimeZone, Timelike};
+use std::fmt::Display;
 
 /// Common type for internal values of date and time parts.
 pub(crate) type PatternValueType = u16;
+
+#[inline]
+pub(crate) fn make_local_datetime<Tz: TimeZone>(
+    tz: &Tz,
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> Option<DateTime<Tz>> {
+    match tz.with_ymd_and_hms(year, month, day, hour, minute, second) {
+        LocalResult::Single(dt) => Some(dt),
+        LocalResult::Ambiguous(earliest, _latest) => Some(earliest),
+        LocalResult::None => None,
+    }
+}
+
+#[inline]
+pub(crate) fn make_local_datetime_start_of_day<Tz: TimeZone>(
+    tz: &Tz,
+    year: i32,
+    month: u32,
+    day: u32,
+) -> Option<DateTime<Tz>> {
+    if let Some(dt) = make_local_datetime(tz, year, month, day, 0, 0, 0) {
+        return Some(dt);
+    }
+    // Midnight (00:00:00) does not exist in local time (midnight DST spring gap).
+    // Find the earliest valid time on this day.
+    for h in 1..=23 {
+        if let Some(dt) = make_local_datetime(tz, year, month, day, h, 0, 0) {
+            return Some(dt);
+        }
+        for m in [15, 30, 45] {
+            if let Some(dt) = make_local_datetime(tz, year, month, day, h, m, 0) {
+                return Some(dt);
+            }
+        }
+    }
+    None
+}
+
+#[inline]
+pub(crate) fn make_local_datetime_start_of_hour<Tz: TimeZone>(
+    tz: &Tz,
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+) -> Option<DateTime<Tz>> {
+    if let Some(dt) = make_local_datetime(tz, year, month, day, hour, 0, 0) {
+        return Some(dt);
+    }
+    // Sub-hour DST gap (e.g. 02:00..02:29 doesn't exist, but 02:30 exists)
+    for m in [15, 30, 45] {
+        if let Some(dt) = make_local_datetime(tz, year, month, day, hour, m, 0) {
+            return Some(dt);
+        }
+    }
+    None
+}
 
 /// Pattern is a single element (part) of a schedule expression.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -19,19 +81,43 @@ pub(crate) struct Pattern {
 
 impl Pattern {
     #[inline]
-    /// Getter for pattern reference.
+    /// Getter for the pattern reference.
     pub(crate) fn pattern(&self) -> &PatternItem {
         &self.pattern
     }
 
-    /// Parses and validates single element of schedule expression.
+    /// Parses and validates a single element of a schedule expression.
     pub(crate) fn parse(type_: PatternType, input: &str) -> Result<Self> {
         if input.is_empty() {
-            return Err(CronError::InvalidCronPattern(input.to_owned(), type_.to_string()));
+            return Err(CronError::InvalidCronPattern {
+                pattern: input.to_owned(),
+                field: type_.to_string(),
+            });
         }
 
-        let mut error_indicator = Ok(());
-        let mut splitted = input
+        // A field can't legitimately need more comma-separated values than it has distinct
+        // valid values - reject oversized lists up front, before doing any parsing work, to
+        // bound the cost of handling adversarially large input.
+        let (min, max) = type_.min_max();
+        let max_items = match type_ {
+            PatternType::Dows if input.contains('#') => 7 * 5, // in case of sharp expression we can get 7*5 combinations
+            PatternType::Seconds
+            | PatternType::Minutes
+            | PatternType::Hours
+            | PatternType::Doms
+            | PatternType::Months
+            | PatternType::Dows
+            | PatternType::Years => max - min + 1,
+        } as usize;
+
+        if input.split(',').nth(max_items).is_some() {
+            return Err(CronError::TooManyPatternValues {
+                field: type_.to_string(),
+                max: max_items,
+            });
+        }
+
+        let mut splitted: Vec<PatternItem> = input
             .split(',')
             .map(|value| {
                 if value == "*" {
@@ -52,16 +138,16 @@ impl Pattern {
                     Ok(PatternItem::Weekday(type_.parse(value)?))
                 } else if value.contains('/') && type_ != PatternType::Dows {
                     // two types of a repeating element:
-                    // - with particular starting value,
-                    //   finishing value is the max possible for this type;
-                    // - and with range of possible values.
+                    // - with a particular starting value, where the finishing value is the
+                    //   maximum possible for this type;
+                    // - and with a range of possible values.
                     let (base, repeater) = value.split_once('/').unwrap();
                     let base = if base == "*" {
                         // `*` means we start from the minimum possible value
                         match type_ {
                             PatternType::Doms | PatternType::Months => "1",
                             PatternType::Years => MIN_YEAR_STR,
-                            _ => "0",
+                            PatternType::Seconds | PatternType::Minutes | PatternType::Hours | PatternType::Dows => "0",
                         }
                     } else {
                         base
@@ -70,11 +156,17 @@ impl Pattern {
                     let repeater = if let Ok(repeater) = repeater.parse() {
                         let (_min, max) = type_.min_max();
                         if repeater < 2 || repeater > max {
-                            return Err(CronError::InvalidRepeatingPattern(value.to_owned(), type_.to_string()));
+                            return Err(CronError::InvalidRepeatingPattern {
+                                pattern: value.to_owned(),
+                                field: type_.to_string(),
+                            });
                         }
                         repeater
                     } else {
-                        return Err(CronError::InvalidRepeatingPattern(value.to_owned(), type_.to_string()));
+                        return Err(CronError::InvalidRepeatingPattern {
+                            pattern: value.to_owned(),
+                            field: type_.to_string(),
+                        });
                     };
 
                     if base.contains('-') {
@@ -82,7 +174,10 @@ impl Pattern {
                         let start = type_.parse(start)?;
                         let end = type_.parse(end)?;
                         if start >= end {
-                            return Err(CronError::InvalidRangeValue(value.to_owned(), type_.to_string()));
+                            return Err(CronError::InvalidRangeValue {
+                                value: value.to_owned(),
+                                field: type_.to_string(),
+                            });
                         }
                         Ok(PatternItem::RepeatingRange(start, end, repeater))
                     } else {
@@ -94,17 +189,29 @@ impl Pattern {
                     let start = type_.parse(start)?;
                     let end = type_.parse(end)?;
                     if start >= end {
-                        return Err(CronError::InvalidRangeValue(value.to_owned(), type_.to_string()));
+                        return Err(CronError::InvalidRangeValue {
+                            value: value.to_owned(),
+                            field: type_.to_string(),
+                        });
                     }
                     Ok(PatternItem::Range(start, end))
                 } else if value.contains('#') && type_ == PatternType::Dows {
                     // Sharp/hash is allowed for day of week only
-                    let mut parts = value.split('#');
-                    let dow = parts.next().unwrap();
-                    let number = parts.next().unwrap();
-                    let number = utils::parse_digital_value(number, 1, 4);
+                    let (dow, number) = match value.split_once('#') {
+                        Some((d, n)) if !n.contains('#') => (d, n),
+                        _ => {
+                            return Err(CronError::InvalidDayOfWeekValue {
+                                value: value.to_owned(),
+                                field: type_.to_string(),
+                            });
+                        }
+                    };
+                    let number = utils::parse_digital_value(number, 1, 5);
                     if number.is_none() {
-                        return Err(CronError::InvalidDayOfWeekValue(value.to_owned(), type_.to_string()));
+                        return Err(CronError::InvalidDayOfWeekValue {
+                            value: value.to_owned(),
+                            field: type_.to_string(),
+                        });
                     }
                     Ok(PatternItem::Hash(type_.parse(dow)?, number.unwrap()))
                 } else {
@@ -112,26 +219,16 @@ impl Pattern {
                     Ok(PatternItem::Particular(type_.parse(value)?))
                 }
             })
-            // we use this to detect that at least one element of the list has an error, so
-            // a whole pattern should be invalidated
-            .scan(&mut error_indicator, |err, res| match res {
-                Ok(o) => Some(o),
-                Err(e) => {
-                    **err = Err(e);
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // we use this to detect that at least one element of the list has an error, so
-        // a whole pattern should be invalidated
-        error_indicator?;
+            .collect::<Result<Vec<_>, _>>()?;
 
         // sanity checks
         if splitted.is_empty()
             || (splitted.len() > 1 && (splitted.contains(&PatternItem::All) || splitted.contains(&PatternItem::Any)))
         {
-            return Err(CronError::InvalidCronPattern(input.to_owned(), type_.to_string()));
+            return Err(CronError::InvalidCronPattern {
+                pattern: input.to_owned(),
+                field: type_.to_string(),
+            });
         }
 
         let pattern = if splitted.len() > 1 {
@@ -143,10 +240,10 @@ impl Pattern {
         Ok(Self { type_, pattern })
     }
 
-    /// Returns next possible and valid value of this pattern element,
-    /// starting form the current timestamp (inclusively) or None.
+    /// Returns the next possible and valid value of this pattern element,
+    /// starting from the current timestamp (inclusively), or `None`.
     pub(crate) fn next<Tz: TimeZone>(&self, current: &mut DateTime<Tz>) -> Option<PatternValueType> {
-        // determine max element value depending on its type
+        // determine the max element value depending on its type
         let max = if self.type_ == PatternType::Doms || self.type_ == PatternType::Dows {
             days_in_month(current.year() as PatternValueType, current.month() as PatternValueType)
         } else {
@@ -164,93 +261,220 @@ impl Pattern {
             PatternType::Years => current.year() as PatternValueType,
         };
 
-        let value: Option<PatternValueType> = match &self.pattern {
-            PatternItem::List(values) => {
-                // iterate over all elements of the list and determine the minimum
-                // possible valid value if it exists
-                let mut min: Option<PatternValueType> = None;
+        let mut value = self.next_value(current, start, max);
 
+        // if we got a value greater than the current one,
+        // we have to update all dependent elements to their first valid values,
+        // because we leaped over to the next day/hour/minute/...
+        // and should start from the beginning
+        if let Some(current_val) = value {
+            if current_val > start {
+                match self.type_ {
+                    PatternType::Years => {
+                        *current = make_local_datetime_start_of_day(&current.timezone(), i32::from(current_val), 1, 1)?;
+                    }
+                    PatternType::Months => {
+                        *current = make_local_datetime_start_of_day(
+                            &current.timezone(),
+                            current.year(),
+                            u32::from(current_val),
+                            1,
+                        )?;
+                    }
+                    PatternType::Doms | PatternType::Dows => {
+                        *current = make_local_datetime_start_of_day(
+                            &current.timezone(),
+                            current.year(),
+                            current.month(),
+                            u32::from(current_val),
+                        )?;
+                    }
+                    PatternType::Hours => {
+                        let mut candidate = Some(current_val);
+                        loop {
+                            if let Some(h) = candidate {
+                                if let Some(updated) = make_local_datetime_start_of_hour(
+                                    &current.timezone(),
+                                    current.year(),
+                                    current.month(),
+                                    current.day(),
+                                    u32::from(h),
+                                ) {
+                                    *current = updated;
+                                    value = Some(h);
+                                    break;
+                                }
+                                // Hour `h` does not exist in local time (DST spring gap).
+                                // Try the next matching hour in this day.
+                                let next_start = h + 1;
+                                if next_start > max {
+                                    value = None;
+                                    break;
+                                }
+                                candidate = self.next_value(current, next_start, max);
+                            } else {
+                                value = None;
+                                break;
+                            }
+                        }
+                    }
+                    PatternType::Minutes => {
+                        let mut candidate = Some(current_val);
+                        loop {
+                            if let Some(m) = candidate {
+                                if let Some(updated) = make_local_datetime(
+                                    &current.timezone(),
+                                    current.year(),
+                                    current.month(),
+                                    current.day(),
+                                    current.hour(),
+                                    u32::from(m),
+                                    0,
+                                ) {
+                                    *current = updated;
+                                    value = Some(m);
+                                    break;
+                                }
+                                // Minute `m` does not exist in local time (sub-hour DST gap).
+                                // Try the next matching minute in this hour.
+                                let next_start = m + 1;
+                                if next_start > max {
+                                    value = None;
+                                    break;
+                                }
+                                candidate = self.next_value(current, next_start, max);
+                            } else {
+                                value = None;
+                                break;
+                            }
+                        }
+                    }
+                    PatternType::Seconds => {
+                        let mut candidate = Some(current_val);
+                        loop {
+                            if let Some(s) = candidate {
+                                if let Some(updated) = make_local_datetime(
+                                    &current.timezone(),
+                                    current.year(),
+                                    current.month(),
+                                    current.day(),
+                                    current.hour(),
+                                    current.minute(),
+                                    u32::from(s),
+                                ) {
+                                    *current = updated;
+                                    value = Some(s);
+                                    break;
+                                }
+                                let next_start = s + 1;
+                                if next_start > max {
+                                    value = None;
+                                    break;
+                                }
+                                candidate = self.next_value(current, next_start, max);
+                            } else {
+                                value = None;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        value
+    }
+
+    fn next_value<Tz: TimeZone>(
+        &self,
+        current: &DateTime<Tz>,
+        start: PatternValueType,
+        max: PatternValueType,
+    ) -> Option<PatternValueType> {
+        self.next_value_for_item(&self.pattern, current, start, max)
+    }
+
+    fn next_value_for_item<Tz: TimeZone>(
+        &self,
+        item: &PatternItem,
+        current: &DateTime<Tz>,
+        start: PatternValueType,
+        max: PatternValueType,
+    ) -> Option<PatternValueType> {
+        match item {
+            PatternItem::List(values) => {
+                let mut min: Option<PatternValueType> = None;
                 for pattern in values {
-                    let item = Self {
-                        type_: self.type_,
-                        pattern: pattern.clone(),
-                    };
-                    let mut current = current.clone();
-                    if let Some(next) = item.next(&mut current) {
+                    if let Some(next) = self.next_value_for_item(pattern, current, start, max) {
                         if let Some(prev) = min {
                             if next < prev {
                                 min = Some(next);
                             }
                         } else {
-                            min = Some(next)
+                            min = Some(next);
                         }
                     }
                 }
                 min
             }
-            // just the first possible in a row
             PatternItem::All => Some(start),
-            // specific single value if not DOW
-            PatternItem::Particular(value) if self.type_ != PatternType::Dows => {
-                if *value >= start && *value <= max {
-                    Some(*value)
+            PatternItem::Particular(value) => {
+                if self.type_ != PatternType::Dows {
+                    if *value >= start && *value <= max {
+                        Some(*value)
+                    } else {
+                        None
+                    }
                 } else {
-                    None
+                    (start..=max).find(|&day| {
+                        utils::day_of_week(
+                            current.year() as PatternValueType,
+                            current.month() as PatternValueType,
+                            day,
+                        ) == *value
+                    })
                 }
             }
-            // or day of month for specific day of week
-            PatternItem::Particular(value) if self.type_ == PatternType::Dows => (start..=max).find(|&day| {
-                utils::day_of_week(
-                    current.year() as PatternValueType,
-                    current.month() as PatternValueType,
-                    day,
-                ) == *value
-            }),
-            // the first value in a range >= than start
-            PatternItem::Range(begin, end) if self.type_ != PatternType::Dows => {
-                SeriesWithStep::new(*begin, *end, 1, *begin)
-                    .filter(|v| *v >= start && *v <= max)
-                    .collect::<BTreeSet<_>>()
-                    .first()
-                    .copied()
+            PatternItem::Range(begin, end) => {
+                if self.type_ != PatternType::Dows {
+                    SeriesWithStep::new(*begin, *end, 1, *begin).find(|v| *v >= start && *v <= max)
+                } else {
+                    (start..=max).find(|&day| {
+                        let dow = utils::day_of_week(
+                            current.year() as PatternValueType,
+                            current.month() as PatternValueType,
+                            day,
+                        );
+                        dow >= *begin && dow <= *end
+                    })
+                }
             }
-            // the same, but for DOW range we return day of month represented by DOW
-            PatternItem::Range(first_dow, last_dow) if self.type_ == PatternType::Dows => (start..=max).find(|&day| {
-                let dow = utils::day_of_week(
-                    current.year() as PatternValueType,
-                    current.month() as PatternValueType,
-                    day,
-                );
-                dow >= *first_dow && dow <= *last_dow
-            }),
             PatternItem::RepeatingValue(range_start, step) => {
-                SeriesWithStep::new(*range_start, max, *step, *range_start)
-                    .filter(|v| *v >= start)
-                    .collect::<BTreeSet<_>>()
-                    .first()
-                    .copied()
+                SeriesWithStep::new(*range_start, max, *step, *range_start).find(|v| *v >= start)
             }
-            PatternItem::RepeatingRange(min, max, step) => SeriesWithStep::new(*min, *max, *step, *min)
-                .filter(|v| *v >= start)
-                .collect::<BTreeSet<_>>()
-                .first()
-                .copied(),
+            PatternItem::RepeatingRange(min, max, step) => {
+                SeriesWithStep::new(*min, *max, *step, *min).find(|v| *v >= start)
+            }
             PatternItem::LastDow(dow) => {
                 let last_dow = utils::last_dow(
                     current.year() as PatternValueType,
                     current.month() as PatternValueType,
                     *dow,
                 );
-                if last_dow >= current.day() as PatternValueType {
+                if last_dow >= current.day() as PatternValueType && last_dow >= start {
                     Some(last_dow)
                 } else {
                     None
                 }
             }
-            PatternItem::LastDom => Some(days_in_month(
-                current.year() as PatternValueType,
-                current.month() as PatternValueType,
-            )),
+            PatternItem::LastDom => {
+                let last_dom = days_in_month(current.year() as PatternValueType, current.month() as PatternValueType);
+                if last_dom >= start {
+                    Some(last_dom)
+                } else {
+                    None
+                }
+            }
             PatternItem::Weekday(dom) => {
                 let weekday = utils::nearest_weekday(
                     current.year() as PatternValueType,
@@ -263,69 +487,15 @@ impl Pattern {
                     None
                 }
             }
-            PatternItem::Hash(dow, number) => {
-                let day = utils::nth_dow(
-                    current.year() as PatternValueType,
-                    current.month() as PatternValueType,
-                    *dow,
-                    *number,
-                );
-                if day >= current.day() as PatternValueType {
-                    Some(day)
-                } else {
-                    None
-                }
-            }
-            // theoretically, we shouldn't call this `next` method for indifferent types.
+            PatternItem::Hash(dow, number) => utils::nth_dow(
+                current.year() as PatternValueType,
+                current.month() as PatternValueType,
+                *dow,
+                *number,
+            )
+            .filter(|&day| day >= start),
             PatternItem::Any => None,
-            _ => unreachable!(),
-        };
-
-        // if we got value greater than current,
-        // we have to update all dependent elements to the first valid values,
-        // because we leaped over to the next day/hour/minute/...
-        // and should start from the beginning
-        if let Some(value) = value {
-            if value > start {
-                match self.type_ {
-                    PatternType::Years => {
-                        *current = current
-                            .with_day(1)?
-                            .with_month(1)?
-                            .with_year(value as i32)?
-                            .with_hour(0)?
-                            .with_minute(0)?
-                            .with_second(0)?;
-                    }
-                    PatternType::Months => {
-                        *current = current
-                            .with_day(1)?
-                            .with_month(value as u32)?
-                            .with_hour(0)?
-                            .with_minute(0)?
-                            .with_second(0)?;
-                    }
-                    PatternType::Doms | PatternType::Dows => {
-                        *current = current
-                            .with_day(value as u32)?
-                            .with_hour(0)?
-                            .with_minute(0)?
-                            .with_second(0)?;
-                    }
-                    PatternType::Hours => {
-                        *current = current.with_hour(value as u32)?.with_minute(0)?.with_second(0)?;
-                    }
-                    PatternType::Minutes => {
-                        *current = current.with_minute(value as u32)?.with_second(0)?;
-                    }
-                    PatternType::Seconds => {
-                        *current = current.with_second(value as u32)?;
-                    }
-                }
-            }
         }
-
-        value
     }
 }
 
@@ -371,11 +541,10 @@ impl PatternType {
         "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
     ];
 
-    /// Returns minimum and maximum valid value of specific pattern element type.
-    fn min_max(&self) -> (PatternValueType, PatternValueType) {
+    /// Returns the minimum and maximum valid values of the specific pattern element type.
+    fn min_max(self) -> (PatternValueType, PatternValueType) {
         match self {
-            Self::Seconds => (0, 59),
-            Self::Minutes => (0, 59),
+            Self::Seconds | Self::Minutes => (0, 59),
             Self::Hours => (0, 23),
             Self::Doms => (1, 31),
             Self::Months => (1, 12),
@@ -384,18 +553,18 @@ impl PatternType {
         }
     }
 
-    /// Parse a single value of the particular pattern element, depending on an element type.
-    fn parse(&self, input: &str) -> Result<PatternValueType> {
+    /// Parses a single value of the particular pattern element, depending on the element type.
+    fn parse(self, input: &str) -> Result<PatternValueType> {
         // determine valid ranges
         let (min, max) = self.min_max();
-        let (variants, starter_shift) = match self {
+        let (variants, starter_shift): (&[&str], PatternValueType) = match self {
             PatternType::Seconds
             | PatternType::Minutes
             | PatternType::Hours
             | PatternType::Doms
-            | PatternType::Years => (vec![], 0),
-            PatternType::Months => (Self::MONTHS.to_vec(), 1),
-            PatternType::Dows => (Self::DAYS_OF_WEEK.to_vec(), 0),
+            | PatternType::Years => (&[], 0),
+            PatternType::Months => (&Self::MONTHS, 1),
+            PatternType::Dows => (&Self::DAYS_OF_WEEK, 0),
         };
 
         // and convert string to the unsigned integer
@@ -408,16 +577,22 @@ impl PatternType {
                 if let Some(value) = utils::parse_digital_value(input, min, max) {
                     Ok(value)
                 } else {
-                    Err(CronError::InvalidDigitalValue(input.to_owned(), self.to_string()))
+                    Err(CronError::InvalidDigitalValue {
+                        value: input.to_owned(),
+                        field: self.to_string(),
+                    })
                 }
             }
             PatternType::Months | PatternType::Dows => {
                 if let Some(value) = utils::parse_digital_value(input, min, max) {
                     Ok(value)
-                } else if let Some(value) = utils::parse_string_value(input, &variants) {
+                } else if let Some(value) = utils::parse_string_value(input, variants) {
                     Ok(value + starter_shift)
                 } else {
-                    Err(CronError::InvalidMnemonicValue(input.to_owned(), self.to_string()))
+                    Err(CronError::InvalidMnemonicValue {
+                        value: input.to_owned(),
+                        field: self.to_string(),
+                    })
                 }
             }
         }
@@ -461,7 +636,7 @@ impl Display for PatternItem {
             PatternItem::Range(start, end) => write!(f, "{start}-{end}"),
             PatternItem::Particular(value) => write!(f, "{value}"),
             PatternItem::List(vec) => {
-                let values = vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+                let values = vec.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
                 write!(f, "{values}")
             }
             PatternItem::Hash(dow, number) => write!(f, "{dow}#{number}"),
@@ -478,6 +653,7 @@ mod tests {
     const MAX_YEAR_STR: &str = "2099";
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds)]
     #[case(PatternType::Minutes)]
     #[case(PatternType::Hours)]
@@ -521,6 +697,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds)]
     #[case(PatternType::Minutes)]
     fn test_pattern_item_parse_valid_1(#[case] type_: PatternType) {
@@ -560,7 +737,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_parse_valid_dows() {
         let test_cases = vec![
             ("*", PatternItem::All),
@@ -571,6 +749,8 @@ mod tests {
             ("fri", PatternItem::Particular(5)),
             ("sun#1", PatternItem::Hash(0, 1)),
             ("3#2", PatternItem::Hash(3, 2)),
+            ("3#5", PatternItem::Hash(3, 5)),
+            ("fri#5", PatternItem::Hash(5, 5)),
             ("4L", PatternItem::LastDow(4)),
             (
                 "3,1",
@@ -608,7 +788,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_parse_valid_months() {
         let test_cases = vec![
             ("*", PatternItem::All),
@@ -671,7 +852,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_parse_valid_doms() {
         let test_cases = vec![
             ("*", PatternItem::All),
@@ -708,7 +890,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_parse_valid_year() {
         let test_cases = vec![
             ("*", PatternItem::All),
@@ -743,12 +926,13 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds, vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/60", "60", "0/1"])]
     #[case(PatternType::Minutes, vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/60", "60", "0/1"])]
     #[case(PatternType::Hours,   vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/24", "24", "0/1"])]
     #[case(PatternType::Doms,    vec!["2-2/2", "5-1/2", "?,4", "*,1", "1-1", "5-1", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/31", "32", "0/1", "0"])]
     #[case(PatternType::Months,  vec!["2-2/2", "5-1/2", "*,1", "1-1", "5-1", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#1", "0/-5", "0/0", "0/12", "32", "0/1", "0"])]
-    #[case(PatternType::Dows,    vec!["?, 3", "*,1", "1-1", "5-1", "W", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/2", "7"])]
+    #[case(PatternType::Dows,    vec!["?, 3", "*,1", "1-1", "5-1", "W", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#6", "1#2#3", "0/-5", "0/0", "0/2", "7"])]
     #[case(PatternType::Years,   vec!["1972-1972/2", "2005-2001/2", "*,1", "2001-2001", "2005-2001", "W", "?", "L", "", " ", ",", "/", "*/", "5/", "-", "1-", "a,b,c", "a-b,c", "1-2-3", ",1", "1,", "1, 2", "1#5", "0/-5", "0/0", "0/2", "1969", "2100", "2000/2100"])]
     fn test_pattern_item_parse_invalid(#[case] type_: PatternType, #[case] input: Vec<&str>) {
         for item in input {
@@ -758,6 +942,51 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    #[case(PatternType::Seconds, 60)]
+    #[case(PatternType::Minutes, 60)]
+    #[case(PatternType::Hours, 24)]
+    #[case(PatternType::Doms, 31)]
+    #[case(PatternType::Months, 12)]
+    #[case(PatternType::Dows, 7)]
+    #[case(PatternType::Years, 130)]
+    fn test_pattern_item_parse_list_size_limit(#[case] type_: PatternType, #[case] max_items: usize) {
+        let valid_value = if type_ == PatternType::Years {
+            MIN_YEAR_STR.to_owned()
+        } else {
+            type_.min_max().0.to_string()
+        };
+
+        let at_limit = vec![valid_value.as_str(); max_items].join(",");
+        assert!(
+            Pattern::parse(type_, &at_limit).is_ok(),
+            "type = {type_:?}, count = {max_items} should be accepted"
+        );
+
+        let over_limit = vec![valid_value.as_str(); max_items + 1].join(",");
+        assert!(
+            matches!(
+                Pattern::parse(type_, &over_limit),
+                Err(CronError::TooManyPatternValues { field, max })
+                    if field == type_.to_string() && max == max_items
+            ),
+            "type = {type_:?}, count = {} should be rejected",
+            max_items + 1
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_item_parse_large_list_rejected() {
+        let massive_input = vec!["0"; 10_000].join(",");
+        assert!(matches!(
+            Pattern::parse(PatternType::Seconds, &massive_input),
+            Err(CronError::TooManyPatternValues { field, max: 60 }) if field == "seconds"
+        ));
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds, "0", 0)]
     #[case(PatternType::Seconds, "33", 33)]
     #[case(PatternType::Seconds, "59", 59)]
@@ -795,6 +1024,7 @@ mod tests {
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     #[case(PatternType::Seconds, "60")]
     #[case(PatternType::Seconds, "-1")]
     #[case(PatternType::Seconds, "256")]
@@ -833,12 +1063,15 @@ mod tests {
     #[case(PatternType::Dows, "we")]
     #[case(PatternType::Dows, "M@n")]
     fn test_parse_invalid_pattern_type(#[case] type_: PatternType, #[case] input: &str) {
-        assert!(
-            matches!(type_.parse(input), Err(CronError::InvalidDigitalValue(e, t)) | Err(CronError::InvalidMnemonicValue(e, t)) if e == input && t == type_.to_string())
-        );
+        assert!(matches!(
+            type_.parse(input),
+            Err(CronError::InvalidDigitalValue { value, field } | CronError::InvalidMnemonicValue { value, field })
+                if value == input && field == type_.to_string()
+        ));
     }
 
     #[rstest]
+    #[timeout(Duration::from_secs(1))]
     // Seconds
     #[case("00:00:00", "0", PatternType::Seconds, Some(0))]
     #[case("00:00:00", "00", PatternType::Seconds, Some(0))]
@@ -1145,7 +1378,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
     fn test_pattern_type_display() {
         assert_eq!(PatternType::Seconds.to_string(), "seconds");
         assert_eq!(PatternType::Minutes.to_string(), "minutes");
@@ -1154,5 +1388,243 @@ mod tests {
         assert_eq!(PatternType::Months.to_string(), "months");
         assert_eq!(PatternType::Dows.to_string(), "days of week");
         assert_eq!(PatternType::Years.to_string(), "years");
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_leaping_years_and_months() {
+        use chrono::Utc;
+
+        // Leaping years
+        let pattern_year = Pattern::parse(PatternType::Years, "2025,2028").unwrap();
+        let mut current = Utc.with_ymd_and_hms(2024, 5, 15, 12, 30, 45).unwrap();
+        let val = pattern_year.next(&mut current);
+        assert_eq!(val, Some(2025));
+        assert_eq!(current, Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap());
+
+        // Leaping months
+        let pattern_month = Pattern::parse(PatternType::Months, "6,10").unwrap();
+        let mut current = Utc.with_ymd_and_hms(2024, 3, 15, 12, 30, 45).unwrap();
+        let val = pattern_month.next(&mut current);
+        assert_eq!(val, Some(6));
+        assert_eq!(current, Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap());
+    }
+
+    #[cfg(feature = "tz")]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_make_local_datetime_start_of_day_dst_gap() {
+        use chrono_tz::America::Havana;
+        // In Havana on 2024-03-10, midnight 00:00:00 was skipped directly to 01:00:00
+        let dt = make_local_datetime_start_of_day(&Havana, 2024, 3, 10);
+        assert!(dt.is_some());
+        assert_eq!(dt.unwrap().hour(), 1);
+    }
+
+    #[cfg(feature = "tz")]
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_minutes_dst_gap_retry() {
+        use crate::Schedule;
+        use chrono_tz::Australia::Lord_Howe;
+        // Lord Howe: 2024-10-06 02:00 -> 02:30 gap (minutes 00..29 do not exist)
+        let schedule = Schedule::new("TZ=Australia/Lord_Howe 0 0,15,30,45 2 6 10 *").unwrap();
+        let current = Lord_Howe.with_ymd_and_hms(2024, 10, 6, 1, 0, 0).unwrap();
+        let next = schedule.upcoming(&current).unwrap();
+        assert_eq!(next.minute(), 30);
+        assert_eq!(next.hour(), 2);
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct MockTz;
+
+    use std::cell::RefCell;
+    thread_local! {
+        #[allow(clippy::type_complexity)]
+        static MOCK_TZ_VALIDATOR: RefCell<Box<dyn Fn(&chrono::NaiveDateTime) -> bool>> =
+            RefCell::new(Box::new(|_| true));
+    }
+
+    impl MockTz {
+        fn with_validator<R>(f: impl Fn(&chrono::NaiveDateTime) -> bool + 'static, op: impl FnOnce(MockTz) -> R) -> R {
+            MOCK_TZ_VALIDATOR.with(|v| *v.borrow_mut() = Box::new(f));
+            let res = op(MockTz);
+            MOCK_TZ_VALIDATOR.with(|v| *v.borrow_mut() = Box::new(|_| true));
+            res
+        }
+    }
+
+    impl TimeZone for MockTz {
+        type Offset = chrono::FixedOffset;
+
+        fn from_offset(_offset: &Self::Offset) -> Self {
+            MockTz
+        }
+
+        fn offset_from_local_date(&self, _local: &chrono::NaiveDate) -> LocalResult<Self::Offset> {
+            LocalResult::Single(chrono::FixedOffset::east_opt(0).unwrap())
+        }
+
+        fn offset_from_local_datetime(&self, local: &chrono::NaiveDateTime) -> LocalResult<Self::Offset> {
+            let is_valid = MOCK_TZ_VALIDATOR.with(|v| (v.borrow())(local));
+            if is_valid {
+                LocalResult::Single(chrono::FixedOffset::east_opt(0).unwrap())
+            } else {
+                LocalResult::None
+            }
+        }
+
+        fn offset_from_utc_date(&self, _utc: &chrono::NaiveDate) -> Self::Offset {
+            chrono::FixedOffset::east_opt(0).unwrap()
+        }
+
+        fn offset_from_utc_datetime(&self, _utc: &chrono::NaiveDateTime) -> Self::Offset {
+            chrono::FixedOffset::east_opt(0).unwrap()
+        }
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_make_local_datetime_start_of_day_subhour_and_none() {
+        use chrono::Timelike;
+
+        // Sub-hour minute match (e.g., 01:30:00 is valid, 00:00:00 and 01:00:00 are not)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| ndt.hour() == 1 && ndt.minute() == 30 && ndt.second() == 0,
+            |tz| {
+                let dt = make_local_datetime_start_of_day(&tz, 2024, 1, 1);
+                assert!(dt.is_some());
+                let dt = dt.unwrap();
+                assert_eq!(dt.hour(), 1);
+                assert_eq!(dt.minute(), 30);
+            },
+        );
+
+        // Completely invalid day (returns None)
+        MockTz::with_validator(
+            |_ndt: &chrono::NaiveDateTime| false,
+            |tz| {
+                let dt = make_local_datetime_start_of_day(&tz, 2024, 1, 1);
+                assert!(dt.is_none());
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_months_and_days_start_of_day_none() {
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| {
+                ndt.year() == 2024
+                    && ndt.month() == 1
+                    && ndt.day() == 1
+                    && ndt.hour() == 0
+                    && ndt.minute() == 0
+                    && ndt.second() == 0
+            },
+            |tz| {
+                // Month advancement failure (line 272 `?`)
+                let pattern_month = Pattern::parse(PatternType::Months, "2").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+                assert_eq!(pattern_month.next(&mut current), None);
+
+                // Day of month advancement failure (line 280 `?`)
+                let pattern_dom = Pattern::parse(PatternType::Doms, "15").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+                assert_eq!(pattern_dom.next(&mut current), None);
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_hours_dst_gap_max_exceeded() {
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| ndt.hour() < 23,
+            |tz| {
+                let pattern_hour = Pattern::parse(PatternType::Hours, "23").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 22, 0, 0).unwrap();
+                assert_eq!(pattern_hour.next(&mut current), None);
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_minutes_dst_gap_retry_and_exhaustion() {
+        // 1. Retry and succeed (minutes 10..=19 do not exist, minute 20 exists)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && (10..20).contains(&ndt.minute())),
+            |tz| {
+                let pattern_minutes_retry = Pattern::parse(PatternType::Minutes, "10,20").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 5, 0).unwrap();
+                assert_eq!(pattern_minutes_retry.next(&mut current), Some(20));
+
+                // 2. Candidate list exhausted (minute 10 fails, no more candidates)
+                let pattern_minutes_exhausted = Pattern::parse(PatternType::Minutes, "10").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 5, 0).unwrap();
+                assert_eq!(pattern_minutes_exhausted.next(&mut current), None);
+            },
+        );
+
+        // 3. Boundary exceeded (minute 59 does not exist, pattern is "59", next_start = 60 > 59)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && ndt.minute() == 59),
+            |tz| {
+                let pattern_minutes_boundary = Pattern::parse(PatternType::Minutes, "59").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 58, 0).unwrap();
+                assert_eq!(pattern_minutes_boundary.next(&mut current), None);
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_next_seconds_dst_gap_retry_and_exhaustion() {
+        // 1. Retry and succeed (seconds 10..=19 do not exist, second 20 exists)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && ndt.minute() == 1 && (10..20).contains(&ndt.second())),
+            |tz| {
+                let pattern_seconds_retry = Pattern::parse(PatternType::Seconds, "10,20").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 1, 5).unwrap();
+                assert_eq!(pattern_seconds_retry.next(&mut current), Some(20));
+
+                // 2. Candidate list exhausted (second 10 fails, no more candidates)
+                let pattern_seconds_exhausted = Pattern::parse(PatternType::Seconds, "10").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 1, 5).unwrap();
+                assert_eq!(pattern_seconds_exhausted.next(&mut current), None);
+            },
+        );
+
+        // 3. Boundary exceeded (second 59 does not exist, pattern is "59", next_start = 60 > 59)
+        MockTz::with_validator(
+            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && ndt.minute() == 1 && ndt.second() == 59),
+            |tz| {
+                let pattern_seconds_boundary = Pattern::parse(PatternType::Seconds, "59").unwrap();
+                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 1, 58).unwrap();
+                assert_eq!(pattern_seconds_boundary.next(&mut current), None);
+            },
+        );
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_item_last_dom_past_end() {
+        use chrono::Utc;
+
+        // In Feb 2023 (28 days), if start is 29, last_dom (28) < start (29), so returns None
+        let pattern = Pattern::parse(PatternType::Doms, "L").unwrap();
+        let current_feb = Utc.with_ymd_and_hms(2023, 2, 1, 0, 0, 0).unwrap();
+        assert_eq!(pattern.next_value(&current_feb, 29, 28), None);
+    }
+
+    #[rstest]
+    #[timeout(Duration::from_secs(1))]
+    fn test_pattern_item_any_next_value() {
+        use chrono::Utc;
+
+        let pattern = Pattern::parse(PatternType::Doms, "?").unwrap();
+        let mut current = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        assert_eq!(pattern.next(&mut current), None);
     }
 }

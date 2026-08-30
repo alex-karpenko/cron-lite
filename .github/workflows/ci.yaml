@@ -21,7 +21,7 @@ jobs:
           - 1.86
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         name: Setup toolchain
         with:
@@ -63,6 +63,6 @@ jobs:
     needs: ci
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
