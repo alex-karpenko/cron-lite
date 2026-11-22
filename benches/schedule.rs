@@ -1,6 +1,6 @@
-use chrono::DateTime;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use cron_lite::Schedule;
+use jiff::{tz::TimeZone, Timestamp, ZonedDateTime};
 
 const EXPRESSIONS: &[&str] = &[
     "@hourly",
@@ -17,6 +17,10 @@ const TAKE_SAMPLES: usize = 10_000;
 
 #[cfg(feature = "tz")]
 const TIME_ZONES: &[&str] = &["UTC", "EET", "Europe/Kyiv"];
+
+fn parse_now(input: &str) -> ZonedDateTime {
+    ZonedDateTime::new(input.parse::<Timestamp>().unwrap(), TimeZone::UTC)
+}
 
 pub fn new_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("new");
@@ -40,11 +44,11 @@ pub fn upcoming_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("upcoming");
     for expression in EXPRESSIONS {
         for now_str in NOW {
-            let now = DateTime::parse_from_rfc3339(now_str).unwrap();
+            let now = parse_now(now_str);
             let schedule = Schedule::new(*expression).unwrap();
             group.bench_with_input(
                 BenchmarkId::from_parameter(format!("{now_str}/{expression}")),
-                &(now, &schedule),
+                &(now.clone(), &schedule),
                 |b, (now, schedule)| b.iter(|| schedule.upcoming(now)),
             );
 
@@ -54,7 +58,7 @@ pub fn upcoming_benchmark(c: &mut Criterion) {
                 let schedule = Schedule::new(&expression).unwrap();
                 group.bench_with_input(
                     BenchmarkId::from_parameter(format!("{now_str}/{expression}")),
-                    &(now, &schedule),
+                    &(now.clone(), &schedule),
                     |b, (now, schedule)| b.iter(|| schedule.upcoming(now)),
                 );
             }
@@ -67,11 +71,11 @@ pub fn iter_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("iter");
     for expression in EXPRESSIONS {
         for now_str in NOW {
-            let now = DateTime::parse_from_rfc3339(now_str).unwrap();
+            let now = parse_now(now_str);
             let schedule = Schedule::new(*expression).unwrap();
             group.bench_with_input(
                 BenchmarkId::from_parameter(format!("{now_str}/{expression}")),
-                &(now, &schedule),
+                &(now.clone(), &schedule),
                 |b, (now, schedule)| b.iter(|| schedule.iter(now).take(TAKE_SAMPLES).count()),
             );
 
@@ -81,7 +85,7 @@ pub fn iter_benchmark(c: &mut Criterion) {
                 let schedule = Schedule::new(&expression).unwrap();
                 group.bench_with_input(
                     BenchmarkId::from_parameter(format!("{now_str}/{expression}")),
-                    &(now, &schedule),
+                    &(now.clone(), &schedule),
                     |b, (now, schedule)| b.iter(|| schedule.iter(now).take(TAKE_SAMPLES).count()),
                 );
             }

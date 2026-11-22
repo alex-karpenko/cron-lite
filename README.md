@@ -16,7 +16,7 @@ This tiny crate is intended to:
 - parse almost all kinds of popular cron schedule formats;
 - generate a series of timestamps according to the schedule.
 
-It has a single external dependency - [chrono](https://crates.io/crates/chrono) (with default features set).
+It has a single external dependency - [jiff](https://crates.io/crates/jiff) (version 1.x, with default features set).
 
 _This is not a cron job scheduler or runner._ If you need a scheduler/runner, look
 for [sacs](https://crates.io/crates/sacs) or
@@ -90,12 +90,12 @@ The single entity of the crate is a `Schedule` structure, which has several basi
 ### Example with `upcoming`
 
 ```rust
-use chrono::Utc;
 use cron_lite::{Result, Schedule};
+use jiff::{tz::TimeZone, Timestamp, ZonedDateTime};
 
 fn main() -> Result<()> {
     let schedule = Schedule::new("0 0 0 * * *")?;
-    let now = Utc::now();
+    let now = ZonedDateTime::new(Timestamp::now(), TimeZone::UTC);
 
     // Get the next event's timestamp starting from now
     let next = schedule.upcoming(&now).unwrap();
@@ -108,12 +108,12 @@ fn main() -> Result<()> {
 ### Example with `iter`
 
 ```rust
-use chrono::Utc;
 use cron_lite::{Result, Schedule};
+use jiff::{tz::TimeZone, Timestamp, ZonedDateTime};
 
 fn main() -> Result<()> {
     let schedule = Schedule::new("0 0 0 * * *")?;
-    let now = Utc::now();
+    let now = ZonedDateTime::new(Timestamp::now(), TimeZone::UTC);
 
     // Get the next 10 timestamps starting from now
     schedule.iter(&now).take(10).for_each(|t| println!("next: {t}"));
@@ -125,12 +125,12 @@ fn main() -> Result<()> {
 ### Example with `stream`
 
 ```rust
-use chrono::Local;
 use cron_lite::{CronEvent, Result, Schedule};
 use futures::stream::StreamExt;
+use jiff::ZonedDateTime;
 async fn stream() -> Result<()> {
     let schedule = Schedule::new("*/15 * * * * *")?;
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     // Wake up every 15 seconds 10 times starting from now but skip the first event.
     let mut s = schedule.stream(&now).skip(1).take(10);
     while let Some(event) = s.next().await {
@@ -164,8 +164,9 @@ Version 0.4.0 hardens the public `CronError`/`CronEvent` API, eliminates unneces
    parsing/evaluating adversarially large cron strings).
 3. **`TryFrom<&String>` was removed.** Use `TryFrom<&str>` instead (e.g. `Schedule::try_from(s.as_str())` or `Schedule::try_from(&s[..])`).
 4. **`ScheduleIterator` is now a public concrete type.** `Schedule::iter` and `Schedule::into_iter` return
-   named `ScheduleIterator<Tz>` rather than opaque `impl Iterator<Item = DateTime<Tz>>`, enabling the iterator type to be stored in struct fields.
+   named `ScheduleIterator` over `jiff::ZonedDateTime` rather than opaque `impl Iterator<Item = DateTime<Tz>>`, enabling the iterator type to be stored in struct fields.
 5. **`Schedule::new` now accepts `impl AsRef<str>`** instead of `impl Into<String>`, eliminating upfront heap allocation when passing string slices.
+6. **Time values now use [jiff](https://docs.rs/jiff) types.** Methods that previously accepted or returned `chrono::DateTime<Tz>` now use `jiff::ZonedDateTime`, and `CronEvent`/`CronSleep`/`CronStream` are no longer generic over a timezone.
 
 ### Migration guide
 
@@ -209,6 +210,78 @@ let schedule = Schedule::try_from(my_string.as_str())?;
 
 **If you handle `Schedule::new` errors generically** (e.g. just via `Display`/`to_string()`), no change is needed —
 only variant *construction* and *exhaustive destructuring* are affected.
+
+### Migrating from `chrono` to `jiff` (`cron-lite` before v0.5.0 to v0.5.0+)
+
+Version 0.5.0 replaces `chrono` and `chrono-tz` with [jiff](https://docs.rs/jiff). If you used `chrono` only to
+create timestamps for `cron-lite`, remove those dependencies and add `jiff` directly:
+
+```toml
+# Before
+chrono = "..."
+chrono-tz = "..." # if used for `TZ=` schedules
+cron-lite = "0.4"
+
+# 0.5.0+
+jiff = "1"
+cron-lite = { version = "0.5", features = ["tz"] } # keep `tz` only for `TZ=` schedules
+```
+
+Replace `chrono::DateTime<Tz>` values and timezone type parameters with `jiff::ZonedDateTime`. The async types and
+the public iterator are no longer generic:
+
+```rust
+// Before
+use chrono::{DateTime, Utc};
+use cron_lite::{CronEvent, CronSleep, CronStream, Schedule, ScheduleIterator};
+
+let now: DateTime<Utc> = Utc::now();
+let next: Option<DateTime<Utc>> = schedule.upcoming(&now);
+let mut iter: ScheduleIterator<Utc> = schedule.iter(&now);
+let sleep: Option<CronSleep<Utc>> = schedule.sleep(&now);
+let stream: CronStream<Utc> = schedule.stream(&now);
+
+// 0.5.0+
+use cron_lite::{CronEvent, CronSleep, CronStream, Schedule, ScheduleIterator};
+use jiff::{tz::TimeZone, Timestamp, ZonedDateTime};
+
+let now: ZonedDateTime = ZonedDateTime::new(Timestamp::now(), TimeZone::UTC);
+let next: Option<ZonedDateTime> = schedule.upcoming(&now);
+let mut iter: ScheduleIterator = schedule.iter(&now);
+let sleep: Option<CronSleep> = schedule.sleep(&now);
+let stream: CronStream = schedule.stream(&now);
+```
+
+Use `ZonedDateTime::now()` instead of the explicit `Timestamp`/`TimeZone` construction when the system local timezone
+is desired. For named timezones, replace `chrono_tz` lookups with `jiff::tz::TimeZone::get`:
+
+```rust
+// Before
+use chrono::Utc;
+use chrono_tz::Europe::Berlin;
+
+let now = Utc::now().with_timezone(&Berlin);
+
+// 0.5.0+
+use jiff::{tz::TimeZone, Timestamp, ZonedDateTime};
+
+let now = ZonedDateTime::new(Timestamp::now(), TimeZone::get("Europe/Berlin")?);
+```
+
+Parsing RFC 3339 timestamps or fixed-offset values now goes through jiff's formatting helpers:
+
+```rust
+use jiff::fmt::strtime;
+use jiff::ZonedDateTime;
+
+let now: ZonedDateTime = strtime::parse("%Y-%m-%dT%H:%M:%S%:z", "2026-01-15T12:00:00+02:00")?
+    .to_zoned_datetime()?;
+```
+
+`CronEvent::Ok`, `CronEvent::Missed`, and the iterator items still have the same structure, but their timestamp is a
+`jiff::ZonedDateTime`. Finally, review DST-sensitive schedules: ambiguous local times resolve to the earlier
+occurrence, and nonexistent local times in a spring-forward gap are skipped (`upcoming()` returns `None` and the
+iterator ends).
 
 ## License
 

@@ -4,36 +4,47 @@ use crate::{
     utils::{self, days_in_month},
     CronError, Result,
 };
-use chrono::{DateTime, Datelike, LocalResult, TimeZone, Timelike};
+use jiff::{
+    civil,
+    tz::{AmbiguousOffset, TimeZone},
+    ZonedDateTime,
+};
 use std::fmt::Display;
 
 /// Common type for internal values of date and time parts.
 pub(crate) type PatternValueType = u16;
 
 #[inline]
-pub(crate) fn make_local_datetime<Tz: TimeZone>(
-    tz: &Tz,
+pub(crate) fn make_local_datetime(
+    tz: &TimeZone,
     year: i32,
     month: u32,
     day: u32,
     hour: u32,
     minute: u32,
     second: u32,
-) -> Option<DateTime<Tz>> {
-    match tz.with_ymd_and_hms(year, month, day, hour, minute, second) {
-        LocalResult::Single(dt) => Some(dt),
-        LocalResult::Ambiguous(earliest, _latest) => Some(earliest),
-        LocalResult::None => None,
+) -> Option<ZonedDateTime> {
+    let year = i16::try_from(year).ok()?;
+    let month = i8::try_from(month).ok()?;
+    let day = i8::try_from(day).ok()?;
+    let hour = i8::try_from(hour).ok()?;
+    let minute = i8::try_from(minute).ok()?;
+    let second = i8::try_from(second).ok()?;
+    let dt = civil::DateTime::new(year, month, day, hour, minute, second, 0).ok()?;
+    let ambiguous = tz.to_ambiguous_zoned_datetime(dt);
+    match ambiguous.offset() {
+        AmbiguousOffset::Gap { .. } => None,
+        AmbiguousOffset::Fold { .. } | AmbiguousOffset::Unambiguous { .. } => ambiguous.earlier().ok(),
     }
 }
 
 #[inline]
-pub(crate) fn make_local_datetime_start_of_day<Tz: TimeZone>(
-    tz: &Tz,
+pub(crate) fn make_local_datetime_start_of_day(
+    tz: &TimeZone,
     year: i32,
     month: u32,
     day: u32,
-) -> Option<DateTime<Tz>> {
+) -> Option<ZonedDateTime> {
     if let Some(dt) = make_local_datetime(tz, year, month, day, 0, 0, 0) {
         return Some(dt);
     }
@@ -53,13 +64,13 @@ pub(crate) fn make_local_datetime_start_of_day<Tz: TimeZone>(
 }
 
 #[inline]
-pub(crate) fn make_local_datetime_start_of_hour<Tz: TimeZone>(
-    tz: &Tz,
+pub(crate) fn make_local_datetime_start_of_hour(
+    tz: &TimeZone,
     year: i32,
     month: u32,
     day: u32,
     hour: u32,
-) -> Option<DateTime<Tz>> {
+) -> Option<ZonedDateTime> {
     if let Some(dt) = make_local_datetime(tz, year, month, day, hour, 0, 0) {
         return Some(dt);
     }
@@ -242,7 +253,7 @@ impl Pattern {
 
     /// Returns the next possible and valid value of this pattern element,
     /// starting from the current timestamp (inclusively), or `None`.
-    pub(crate) fn next<Tz: TimeZone>(&self, current: &mut DateTime<Tz>) -> Option<PatternValueType> {
+    pub(crate) fn next(&self, current: &mut ZonedDateTime) -> Option<PatternValueType> {
         // determine the max element value depending on its type
         let max = if self.type_ == PatternType::Doms || self.type_ == PatternType::Dows {
             days_in_month(current.year() as PatternValueType, current.month() as PatternValueType)
@@ -271,21 +282,21 @@ impl Pattern {
             if current_val > start {
                 match self.type_ {
                     PatternType::Years => {
-                        *current = make_local_datetime_start_of_day(&current.timezone(), i32::from(current_val), 1, 1)?;
+                        *current = make_local_datetime_start_of_day(current.time_zone(), i32::from(current_val), 1, 1)?;
                     }
                     PatternType::Months => {
                         *current = make_local_datetime_start_of_day(
-                            &current.timezone(),
-                            current.year(),
+                            current.time_zone(),
+                            i32::from(current.year()),
                             u32::from(current_val),
                             1,
                         )?;
                     }
                     PatternType::Doms | PatternType::Dows => {
                         *current = make_local_datetime_start_of_day(
-                            &current.timezone(),
-                            current.year(),
-                            current.month(),
+                            current.time_zone(),
+                            i32::from(current.year()),
+                            u32::try_from(current.month()).unwrap(),
                             u32::from(current_val),
                         )?;
                     }
@@ -294,10 +305,10 @@ impl Pattern {
                         loop {
                             if let Some(h) = candidate {
                                 if let Some(updated) = make_local_datetime_start_of_hour(
-                                    &current.timezone(),
-                                    current.year(),
-                                    current.month(),
-                                    current.day(),
+                                    current.time_zone(),
+                                    i32::from(current.year()),
+                                    u32::try_from(current.month()).unwrap(),
+                                    u32::try_from(current.day()).unwrap(),
                                     u32::from(h),
                                 ) {
                                     *current = updated;
@@ -323,11 +334,11 @@ impl Pattern {
                         loop {
                             if let Some(m) = candidate {
                                 if let Some(updated) = make_local_datetime(
-                                    &current.timezone(),
-                                    current.year(),
-                                    current.month(),
-                                    current.day(),
-                                    current.hour(),
+                                    current.time_zone(),
+                                    i32::from(current.year()),
+                                    u32::try_from(current.month()).unwrap(),
+                                    u32::try_from(current.day()).unwrap(),
+                                    u32::try_from(current.hour()).unwrap(),
                                     u32::from(m),
                                     0,
                                 ) {
@@ -354,12 +365,12 @@ impl Pattern {
                         loop {
                             if let Some(s) = candidate {
                                 if let Some(updated) = make_local_datetime(
-                                    &current.timezone(),
-                                    current.year(),
-                                    current.month(),
-                                    current.day(),
-                                    current.hour(),
-                                    current.minute(),
+                                    current.time_zone(),
+                                    i32::from(current.year()),
+                                    u32::try_from(current.month()).unwrap(),
+                                    u32::try_from(current.day()).unwrap(),
+                                    u32::try_from(current.hour()).unwrap(),
+                                    u32::try_from(current.minute()).unwrap(),
                                     u32::from(s),
                                 ) {
                                     *current = updated;
@@ -385,19 +396,19 @@ impl Pattern {
         value
     }
 
-    fn next_value<Tz: TimeZone>(
+    fn next_value(
         &self,
-        current: &DateTime<Tz>,
+        current: &ZonedDateTime,
         start: PatternValueType,
         max: PatternValueType,
     ) -> Option<PatternValueType> {
         self.next_value_for_item(&self.pattern, current, start, max)
     }
 
-    fn next_value_for_item<Tz: TimeZone>(
+    fn next_value_for_item(
         &self,
         item: &PatternItem,
-        current: &DateTime<Tz>,
+        current: &ZonedDateTime,
         start: PatternValueType,
         max: PatternValueType,
     ) -> Option<PatternValueType> {
@@ -647,10 +658,42 @@ impl Display for PatternItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jiff::{civil, fmt::strtime, ZonedDateTime};
     use rstest::rstest;
     use std::time::Duration;
 
     const MAX_YEAR_STR: &str = "2099";
+
+    fn parse_rfc3339(input: &str) -> Result<ZonedDateTime, jiff::Error> {
+        let normalized = if let Some(prefix) = input.strip_suffix('Z') {
+            format!("{prefix}+00:00")
+        } else {
+            input.to_string()
+        };
+        strtime::parse("%Y-%m-%dT%H:%M:%S%.f%:z", &normalized)?.to_zoned_datetime()
+    }
+
+    fn format_rfc3339(value: &ZonedDateTime) -> String {
+        strtime::format("%Y-%m-%dT%H:%M:%S%:z", value).unwrap()
+    }
+
+    fn utc(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> Result<ZonedDateTime, jiff::Error> {
+        civil::date(year, month, day)
+            .at(hour, minute, second, 0)
+            .to_zoned_datetime(TimeZone::UTC)
+    }
+
+    fn at(tz: &TimeZone, year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> ZonedDateTime {
+        civil::date(year, month, day)
+            .at(hour, minute, second, 0)
+            .to_zoned_datetime(tz.clone())
+            .unwrap()
+    }
+
+    fn gap_tz(dst_offset: &str, transition: &str) -> TimeZone {
+        let rule = format!("STD0DST-{dst_offset},M3.2.0/{transition},M11.1.0/{transition}");
+        TimeZone::posix(&rule).unwrap()
+    }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
@@ -1209,16 +1252,16 @@ mod tests {
         #[case] expected: Option<PatternValueType>,
     ) {
         let date_times = [
-            DateTime::parse_from_rfc3339(format!("2024-01-01T{time}Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("2024-02-01T{time}Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("2024-02-29T{time}Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("2023-02-28T{time}Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("1999-05-13T{time}Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("1999-12-31T{time}Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("1970-06-01T{time}Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("1970-06-30T{time}Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("2099-01-01T{time}Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("2099-12-31T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("2024-01-01T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("2024-02-01T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("2024-02-29T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("2023-02-28T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("1999-05-13T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("1999-12-31T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("1970-06-01T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("1970-06-30T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("2099-01-01T{time}Z").as_str()).unwrap(),
+            parse_rfc3339(format!("2099-12-31T{time}Z").as_str()).unwrap(),
         ];
 
         let pattern = Pattern::parse(type_, input);
@@ -1234,7 +1277,7 @@ mod tests {
                 pattern.as_ref().unwrap().next(&mut now),
                 expected,
                 "first: type = {type_:?}, time = {now}, pattern = {input}",
-                now = now.to_rfc3339()
+                now = format_rfc3339(&now)
             );
         }
     }
@@ -1347,16 +1390,16 @@ mod tests {
         #[case] expected: Option<PatternValueType>,
     ) {
         let date_times = [
-            DateTime::parse_from_rfc3339(format!("{date}T00:00:00Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("{date}T00:15:33Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("{date}T01:00:00Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("{date}T01:29:12Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("{date}T11:59:59Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("{date}T12:00:00Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("{date}T12:13:14Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("{date}T19:00:00Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("{date}T23:00:00Z").as_str()).unwrap(),
-            DateTime::parse_from_rfc3339(format!("{date}T23:59:59Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T00:00:00Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T00:15:33Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T01:00:00Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T01:29:12Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T11:59:59Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T12:00:00Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T12:13:14Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T19:00:00Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T23:00:00Z").as_str()).unwrap(),
+            parse_rfc3339(format!("{date}T23:59:59Z").as_str()).unwrap(),
         ];
 
         let pattern = Pattern::parse(type_, input);
@@ -1368,12 +1411,12 @@ mod tests {
         );
 
         for now in date_times {
-            let mut current = now;
+            let mut current = now.clone();
             assert_eq!(
                 pattern.as_ref().unwrap().next(&mut current),
                 expected,
                 "type = {type_:?}, time = {now}, pattern = {input}",
-                now = now.to_rfc3339()
+                now = format_rfc3339(&now)
             );
         }
     }
@@ -1393,30 +1436,28 @@ mod tests {
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_pattern_next_leaping_years_and_months() {
-        use chrono::Utc;
-
         // Leaping years
         let pattern_year = Pattern::parse(PatternType::Years, "2025,2028").unwrap();
-        let mut current = Utc.with_ymd_and_hms(2024, 5, 15, 12, 30, 45).unwrap();
+        let mut current = utc(2024, 5, 15, 12, 30, 45).unwrap();
         let val = pattern_year.next(&mut current);
         assert_eq!(val, Some(2025));
-        assert_eq!(current, Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap());
+        assert_eq!(current, utc(2025, 1, 1, 0, 0, 0).unwrap());
 
         // Leaping months
         let pattern_month = Pattern::parse(PatternType::Months, "6,10").unwrap();
-        let mut current = Utc.with_ymd_and_hms(2024, 3, 15, 12, 30, 45).unwrap();
+        let mut current = utc(2024, 3, 15, 12, 30, 45).unwrap();
         let val = pattern_month.next(&mut current);
         assert_eq!(val, Some(6));
-        assert_eq!(current, Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap());
+        assert_eq!(current, utc(2024, 6, 1, 0, 0, 0).unwrap());
     }
 
     #[cfg(feature = "tz")]
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_make_local_datetime_start_of_day_dst_gap() {
-        use chrono_tz::America::Havana;
         // In Havana on 2024-03-10, midnight 00:00:00 was skipped directly to 01:00:00
-        let dt = make_local_datetime_start_of_day(&Havana, 2024, 3, 10);
+        let tz = TimeZone::get("America/Havana").unwrap();
+        let dt = make_local_datetime_start_of_day(&tz, 2024, 3, 10);
         assert!(dt.is_some());
         assert_eq!(dt.unwrap().hour(), 1);
     }
@@ -1426,205 +1467,84 @@ mod tests {
     #[timeout(Duration::from_secs(1))]
     fn test_pattern_next_minutes_dst_gap_retry() {
         use crate::Schedule;
-        use chrono_tz::Australia::Lord_Howe;
         // Lord Howe: 2024-10-06 02:00 -> 02:30 gap (minutes 00..29 do not exist)
         let schedule = Schedule::new("TZ=Australia/Lord_Howe 0 0,15,30,45 2 6 10 *").unwrap();
-        let current = Lord_Howe.with_ymd_and_hms(2024, 10, 6, 1, 0, 0).unwrap();
+        let current = at(&TimeZone::get("Australia/Lord_Howe").unwrap(), 2024, 10, 6, 1, 0, 0);
         let next = schedule.upcoming(&current).unwrap();
         assert_eq!(next.minute(), 30);
         assert_eq!(next.hour(), 2);
     }
 
-    #[derive(Clone, Copy, Debug, PartialEq)]
-    struct MockTz;
-
-    use std::cell::RefCell;
-    thread_local! {
-        #[allow(clippy::type_complexity)]
-        static MOCK_TZ_VALIDATOR: RefCell<Box<dyn Fn(&chrono::NaiveDateTime) -> bool>> =
-            RefCell::new(Box::new(|_| true));
-    }
-
-    impl MockTz {
-        fn with_validator<R>(f: impl Fn(&chrono::NaiveDateTime) -> bool + 'static, op: impl FnOnce(MockTz) -> R) -> R {
-            MOCK_TZ_VALIDATOR.with(|v| *v.borrow_mut() = Box::new(f));
-            let res = op(MockTz);
-            MOCK_TZ_VALIDATOR.with(|v| *v.borrow_mut() = Box::new(|_| true));
-            res
-        }
-    }
-
-    impl TimeZone for MockTz {
-        type Offset = chrono::FixedOffset;
-
-        fn from_offset(_offset: &Self::Offset) -> Self {
-            MockTz
-        }
-
-        fn offset_from_local_date(&self, _local: &chrono::NaiveDate) -> LocalResult<Self::Offset> {
-            LocalResult::Single(chrono::FixedOffset::east_opt(0).unwrap())
-        }
-
-        fn offset_from_local_datetime(&self, local: &chrono::NaiveDateTime) -> LocalResult<Self::Offset> {
-            let is_valid = MOCK_TZ_VALIDATOR.with(|v| (v.borrow())(local));
-            if is_valid {
-                LocalResult::Single(chrono::FixedOffset::east_opt(0).unwrap())
-            } else {
-                LocalResult::None
-            }
-        }
-
-        fn offset_from_utc_date(&self, _utc: &chrono::NaiveDate) -> Self::Offset {
-            chrono::FixedOffset::east_opt(0).unwrap()
-        }
-
-        fn offset_from_utc_datetime(&self, _utc: &chrono::NaiveDateTime) -> Self::Offset {
-            chrono::FixedOffset::east_opt(0).unwrap()
-        }
-    }
-
     #[rstest]
     #[timeout(Duration::from_secs(1))]
-    fn test_make_local_datetime_start_of_day_subhour_and_none() {
-        use chrono::Timelike;
-
-        // Sub-hour minute match (e.g., 01:30:00 is valid, 00:00:00 and 01:00:00 are not)
-        MockTz::with_validator(
-            |ndt: &chrono::NaiveDateTime| ndt.hour() == 1 && ndt.minute() == 30 && ndt.second() == 0,
-            |tz| {
-                let dt = make_local_datetime_start_of_day(&tz, 2024, 1, 1);
-                assert!(dt.is_some());
-                let dt = dt.unwrap();
-                assert_eq!(dt.hour(), 1);
-                assert_eq!(dt.minute(), 30);
-            },
-        );
-
-        // Completely invalid day (returns None)
-        MockTz::with_validator(
-            |_ndt: &chrono::NaiveDateTime| false,
-            |tz| {
-                let dt = make_local_datetime_start_of_day(&tz, 2024, 1, 1);
-                assert!(dt.is_none());
-            },
-        );
-    }
-
-    #[rstest]
-    #[timeout(Duration::from_secs(1))]
-    fn test_pattern_next_months_and_days_start_of_day_none() {
-        MockTz::with_validator(
-            |ndt: &chrono::NaiveDateTime| {
-                ndt.year() == 2024
-                    && ndt.month() == 1
-                    && ndt.day() == 1
-                    && ndt.hour() == 0
-                    && ndt.minute() == 0
-                    && ndt.second() == 0
-            },
-            |tz| {
-                // Month advancement failure (line 272 `?`)
-                let pattern_month = Pattern::parse(PatternType::Months, "2").unwrap();
-                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
-                assert_eq!(pattern_month.next(&mut current), None);
-
-                // Day of month advancement failure (line 280 `?`)
-                let pattern_dom = Pattern::parse(PatternType::Doms, "15").unwrap();
-                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
-                assert_eq!(pattern_dom.next(&mut current), None);
-            },
-        );
+    fn test_make_local_datetime_start_of_day_subhour_gap() {
+        let tz = gap_tz("0:30", "0");
+        let dt = make_local_datetime_start_of_day(&tz, 2024, 3, 10).unwrap();
+        assert_eq!(dt.hour(), 1);
+        assert_eq!(dt.minute(), 0);
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_pattern_next_hours_dst_gap_max_exceeded() {
-        MockTz::with_validator(
-            |ndt: &chrono::NaiveDateTime| ndt.hour() < 23,
-            |tz| {
-                let pattern_hour = Pattern::parse(PatternType::Hours, "23").unwrap();
-                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 22, 0, 0).unwrap();
-                assert_eq!(pattern_hour.next(&mut current), None);
-            },
-        );
+        let tz = gap_tz("1", "23");
+        let pattern_hour = Pattern::parse(PatternType::Hours, "23").unwrap();
+        let mut current = at(&tz, 2024, 3, 10, 22, 0, 0);
+        assert_eq!(pattern_hour.next(&mut current), None);
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_pattern_next_minutes_dst_gap_retry_and_exhaustion() {
-        // 1. Retry and succeed (minutes 10..=19 do not exist, minute 20 exists)
-        MockTz::with_validator(
-            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && (10..20).contains(&ndt.minute())),
-            |tz| {
-                let pattern_minutes_retry = Pattern::parse(PatternType::Minutes, "10,20").unwrap();
-                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 5, 0).unwrap();
-                assert_eq!(pattern_minutes_retry.next(&mut current), Some(20));
+        let retry_tz = gap_tz("0:10", "1:10");
+        let pattern_minutes_retry = Pattern::parse(PatternType::Minutes, "10,20").unwrap();
+        let mut current = at(&retry_tz, 2024, 3, 10, 1, 5, 0);
+        assert_eq!(pattern_minutes_retry.next(&mut current), Some(20));
 
-                // 2. Candidate list exhausted (minute 10 fails, no more candidates)
-                let pattern_minutes_exhausted = Pattern::parse(PatternType::Minutes, "10").unwrap();
-                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 5, 0).unwrap();
-                assert_eq!(pattern_minutes_exhausted.next(&mut current), None);
-            },
-        );
+        let exhausted_tz = gap_tz("0:10", "1:10");
+        let pattern_minutes_exhausted = Pattern::parse(PatternType::Minutes, "10").unwrap();
+        let mut current = at(&exhausted_tz, 2024, 3, 10, 1, 5, 0);
+        assert_eq!(pattern_minutes_exhausted.next(&mut current), None);
 
-        // 3. Boundary exceeded (minute 59 does not exist, pattern is "59", next_start = 60 > 59)
-        MockTz::with_validator(
-            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && ndt.minute() == 59),
-            |tz| {
-                let pattern_minutes_boundary = Pattern::parse(PatternType::Minutes, "59").unwrap();
-                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 58, 0).unwrap();
-                assert_eq!(pattern_minutes_boundary.next(&mut current), None);
-            },
-        );
+        let boundary_tz = gap_tz("0:10", "1:59");
+        let pattern_minutes_boundary = Pattern::parse(PatternType::Minutes, "59").unwrap();
+        let mut current = at(&boundary_tz, 2024, 3, 10, 1, 58, 0);
+        assert_eq!(pattern_minutes_boundary.next(&mut current), None);
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_pattern_next_seconds_dst_gap_retry_and_exhaustion() {
-        // 1. Retry and succeed (seconds 10..=19 do not exist, second 20 exists)
-        MockTz::with_validator(
-            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && ndt.minute() == 1 && (10..20).contains(&ndt.second())),
-            |tz| {
-                let pattern_seconds_retry = Pattern::parse(PatternType::Seconds, "10,20").unwrap();
-                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 1, 5).unwrap();
-                assert_eq!(pattern_seconds_retry.next(&mut current), Some(20));
+        let retry_tz = gap_tz("0:00:10", "1:01:10");
+        let pattern_seconds_retry = Pattern::parse(PatternType::Seconds, "10,20").unwrap();
+        let mut current = at(&retry_tz, 2024, 3, 10, 1, 1, 5);
+        assert_eq!(pattern_seconds_retry.next(&mut current), Some(20));
 
-                // 2. Candidate list exhausted (second 10 fails, no more candidates)
-                let pattern_seconds_exhausted = Pattern::parse(PatternType::Seconds, "10").unwrap();
-                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 1, 5).unwrap();
-                assert_eq!(pattern_seconds_exhausted.next(&mut current), None);
-            },
-        );
+        let exhausted_tz = gap_tz("0:00:10", "1:01:10");
+        let pattern_seconds_exhausted = Pattern::parse(PatternType::Seconds, "10").unwrap();
+        let mut current = at(&exhausted_tz, 2024, 3, 10, 1, 1, 5);
+        assert_eq!(pattern_seconds_exhausted.next(&mut current), None);
 
-        // 3. Boundary exceeded (second 59 does not exist, pattern is "59", next_start = 60 > 59)
-        MockTz::with_validator(
-            |ndt: &chrono::NaiveDateTime| !(ndt.hour() == 1 && ndt.minute() == 1 && ndt.second() == 59),
-            |tz| {
-                let pattern_seconds_boundary = Pattern::parse(PatternType::Seconds, "59").unwrap();
-                let mut current = tz.with_ymd_and_hms(2024, 1, 1, 1, 1, 58).unwrap();
-                assert_eq!(pattern_seconds_boundary.next(&mut current), None);
-            },
-        );
+        let boundary_tz = gap_tz("0:00:10", "1:01:59");
+        let pattern_seconds_boundary = Pattern::parse(PatternType::Seconds, "59").unwrap();
+        let mut current = at(&boundary_tz, 2024, 3, 10, 1, 1, 58);
+        assert_eq!(pattern_seconds_boundary.next(&mut current), None);
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_last_dom_past_end() {
-        use chrono::Utc;
-
         // In Feb 2023 (28 days), if start is 29, last_dom (28) < start (29), so returns None
         let pattern = Pattern::parse(PatternType::Doms, "L").unwrap();
-        let current_feb = Utc.with_ymd_and_hms(2023, 2, 1, 0, 0, 0).unwrap();
+        let current_feb = utc(2023, 2, 1, 0, 0, 0).unwrap();
         assert_eq!(pattern.next_value(&current_feb, 29, 28), None);
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_pattern_item_any_next_value() {
-        use chrono::Utc;
-
         let pattern = Pattern::parse(PatternType::Doms, "?").unwrap();
-        let mut current = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let mut current = utc(2024, 1, 1, 0, 0, 0).unwrap();
         assert_eq!(pattern.next(&mut current), None);
     }
 }

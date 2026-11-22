@@ -1,5 +1,5 @@
-use chrono::Utc;
 use cron_lite::{Result, Schedule};
+use jiff::ZonedDateTime;
 use rstest::rstest;
 use std::time::Duration;
 
@@ -7,7 +7,7 @@ use std::time::Duration;
 #[timeout(Duration::from_secs(1))]
 fn iter() -> Result<()> {
     let schedule = Schedule::new("0 0 0 * * *")?;
-    let now = Utc::now();
+    let now = ZonedDateTime::now();
 
     // Get the next 10 timestamps starting from now
     schedule.iter(&now).take(20000).for_each(|t| println!("next: {t}"));
@@ -19,7 +19,7 @@ fn iter() -> Result<()> {
 #[timeout(Duration::from_secs(1))]
 fn into_iter() -> Result<()> {
     let schedule = Schedule::new("0 0 0 * * *")?;
-    let now = Utc::now();
+    let now = ZonedDateTime::now();
 
     // Get the next 10 timestamps starting from now
     schedule.into_iter(&now).take(20000).for_each(|t| println!("next: {t}"));

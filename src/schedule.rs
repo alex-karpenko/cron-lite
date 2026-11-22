@@ -1,11 +1,15 @@
 use crate::{
-    pattern::{Pattern, PatternItem, PatternType, PatternValueType},
+    pattern::{make_local_datetime, Pattern, PatternItem, PatternType, PatternValueType},
     utils, CronError, Result,
 };
-use chrono::{offset::LocalResult, DateTime, Datelike, TimeDelta, TimeZone, Timelike};
 #[cfg(feature = "tz")]
-use chrono_tz::Tz;
-use std::{fmt::Display, str::FromStr};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, ZonedDateTime};
+use std::{
+    fmt::Display,
+    hash::{Hash, Hasher},
+    str::FromStr,
+};
 
 /// Minimum valid year.
 pub const MIN_YEAR: u16 = 1970;
@@ -44,7 +48,7 @@ impl DomDowRelation {
 /// Represents a cron schedule pattern with its methods.
 ///
 /// For cron schedule clarification and usage examples, please refer to the [crate documentation](crate).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "String"))]
 #[cfg_attr(feature = "serde", serde(into = "String"))]
@@ -57,7 +61,9 @@ pub struct Schedule {
     minute: Pattern,
     second: Pattern,
     #[cfg(feature = "tz")]
-    tz: Option<Tz>,
+    tz: Option<TimeZone>,
+    #[cfg(feature = "tz")]
+    tz_name: Option<String>,
 }
 
 impl Schedule {
@@ -72,14 +78,17 @@ impl Schedule {
         let mut elements: Vec<&str> = pattern_str.split_whitespace().collect();
         #[cfg(feature = "tz")]
         let mut tz = None;
+        #[cfg(feature = "tz")]
+        let mut tz_name = None;
 
         // Parse and define TZ, if present
         #[cfg(feature = "tz")]
         if elements.len() >= 2 {
             if let Some((prefix, tz_str)) = elements[0].split_once('=') {
                 if prefix.eq_ignore_ascii_case("tz") {
-                    if let Ok(tz_value) = Tz::from_str(tz_str) {
+                    if let Ok(tz_value) = TimeZone::get(tz_str) {
                         tz = Some(tz_value);
+                        tz_name = Some(tz_str.to_string());
                         elements.remove(0);
                     } else {
                         return Err(CronError::InvalidTimeZone(tz_str.to_string()));
@@ -119,6 +128,8 @@ impl Schedule {
             year: Pattern::parse(PatternType::Years, elements[6])?,
             #[cfg(feature = "tz")]
             tz,
+            #[cfg(feature = "tz")]
+            tz_name,
         };
 
         // Validate DOM and DOW relationship.
@@ -144,7 +155,8 @@ impl Schedule {
     /// Returns `None` if there is no time for the upcoming event.
     #[cfg(not(feature = "tz"))]
     #[inline]
-    pub fn upcoming<T: TimeZone>(&self, current: &DateTime<T>) -> Option<DateTime<T>> {
+    #[must_use]
+    pub fn upcoming(&self, current: &ZonedDateTime) -> Option<ZonedDateTime> {
         self.upcoming_impl(current)
     }
 
@@ -162,12 +174,13 @@ impl Schedule {
     ///
     /// Returns `None` if there is no time for the upcoming event.
     #[cfg(feature = "tz")]
-    pub fn upcoming<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
+    #[must_use]
+    pub fn upcoming(&self, current: &ZonedDateTime) -> Option<ZonedDateTime> {
         if let Some(schedule_tz) = &self.tz {
-            let current_tz = current.timezone();
-            let current = current.with_timezone(schedule_tz);
+            let current_tz = current.time_zone().clone();
+            let current = current.with_time_zone(schedule_tz.clone());
             let result = self.upcoming_impl(&current);
-            result.map(|dt| dt.with_timezone(&current_tz))
+            result.map(|dt| dt.with_time_zone(current_tz.clone()))
         } else {
             self.upcoming_impl(current)
         }
@@ -176,10 +189,16 @@ impl Schedule {
     /// Returns the time of the upcoming cron event, starting from (and including) the provided `current` value.
     ///
     /// Returns `None` if there is no upcoming event.
-    fn upcoming_impl<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<DateTime<Tz>> {
+    fn upcoming_impl(&self, current: &ZonedDateTime) -> Option<ZonedDateTime> {
         // Normalize current time to the start of the whole second.
-        let mut current = if current.nanosecond() > 0 {
-            current.with_nanosecond(0)?.checked_add_signed(TimeDelta::seconds(1))?
+        let mut current = if current.subsec_nanosecond() > 0 {
+            current
+                .with()
+                .subsec_nanosecond(0)
+                .build()
+                .ok()?
+                .checked_add(SignedDuration::from_secs(1))
+                .ok()?
         } else {
             current.clone()
         };
@@ -217,7 +236,8 @@ impl Schedule {
                 inc_minute(&mut year, &mut month, &mut dom, &mut hour, &mut minute, &mut second)?;
             }
 
-            current = match current.timezone().with_ymd_and_hms(
+            current = match make_local_datetime(
+                current.time_zone(),
                 i32::from(year?),
                 u32::from(month?),
                 u32::from(dom?),
@@ -225,9 +245,8 @@ impl Schedule {
                 u32::from(minute?),
                 u32::from(second?),
             ) {
-                LocalResult::Single(updated_current) => updated_current,
-                LocalResult::Ambiguous(earliest, _latest) => earliest,
-                LocalResult::None => {
+                Some(updated_current) => updated_current,
+                None => {
                     minute = None;
                     continue;
                 }
@@ -290,23 +309,21 @@ impl Schedule {
             }
         }
 
-        match current.timezone().with_ymd_and_hms(
+        make_local_datetime(
+            current.time_zone(),
             i32::from(year?),
             u32::from(month?),
             u32::from(dom?),
             u32::from(hour?),
             u32::from(minute?),
             u32::from(second?),
-        ) {
-            LocalResult::Single(current) => Some(current),
-            LocalResult::Ambiguous(earliest, _latest) => Some(earliest),
-            LocalResult::None => None,
-        }
+        )
     }
 
     /// Returns an iterator of events starting from `current` (inclusively).
     #[inline]
-    pub fn iter<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> ScheduleIterator<Tz> {
+    #[must_use]
+    pub fn iter(&self, current: &ZonedDateTime) -> ScheduleIterator {
         ScheduleIterator {
             schedule: self.clone(),
             next: self.upcoming(current),
@@ -315,7 +332,8 @@ impl Schedule {
 
     /// Consumes the [`Schedule`] and returns an iterator of events starting from `current` (inclusively).
     #[inline]
-    pub fn into_iter<Tz: TimeZone>(self, current: &DateTime<Tz>) -> ScheduleIterator<Tz> {
+    #[must_use]
+    pub fn into_iter(self, current: &ZonedDateTime) -> ScheduleIterator {
         let next = self.upcoming(current);
         ScheduleIterator { schedule: self, next }
     }
@@ -323,19 +341,19 @@ impl Schedule {
 
 /// Contains the iterator state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ScheduleIterator<Tz: TimeZone> {
+pub struct ScheduleIterator {
     pub(crate) schedule: Schedule,
-    pub(crate) next: Option<DateTime<Tz>>,
+    pub(crate) next: Option<ZonedDateTime>,
 }
 
-impl<Tz: TimeZone> Iterator for ScheduleIterator<Tz> {
-    type Item = DateTime<Tz>;
+impl Iterator for ScheduleIterator {
+    type Item = ZonedDateTime;
 
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.next.take()?;
         self.next = self
             .schedule
-            .upcoming(&current.clone().checked_add_signed(TimeDelta::seconds(1))?);
+            .upcoming(&current.checked_add(SignedDuration::from_secs(1)).ok()?);
         Some(current)
     }
 }
@@ -388,7 +406,7 @@ impl Display for Schedule {
         }
 
         #[cfg(feature = "tz")]
-        if let Some(tz) = self.tz {
+        if let Some(tz) = &self.tz_name {
             write!(
                 f,
                 "TZ={} {} {} {} {} {} {} {}",
@@ -401,6 +419,20 @@ impl Display for Schedule {
                 self.second, self.minute, self.hour, self.dom, self.month, self.dow, self.year
             )
         }
+    }
+}
+
+impl Hash for Schedule {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.year.hash(state);
+        self.month.hash(state);
+        self.dom.hash(state);
+        self.dow.hash(state);
+        self.hour.hash(state);
+        self.minute.hash(state);
+        self.second.hash(state);
+        #[cfg(feature = "tz")]
+        self.tz_name.hash(state);
     }
 }
 
@@ -514,10 +546,45 @@ fn inc_minute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::DateTime;
+    #[cfg(feature = "tz")]
+    use jiff::{civil, tz::TimeZone};
+    use jiff::{fmt::strtime, ZonedDateTime};
     use rstest::rstest;
     use rstest_reuse::{apply, template};
     use std::time::Duration;
+
+    fn parse_rfc3339(input: &str) -> Result<ZonedDateTime, jiff::Error> {
+        let normalized = if let Some(prefix) = input.strip_suffix('Z') {
+            format!("{prefix}+00:00")
+        } else {
+            input.to_string()
+        };
+        strtime::parse("%Y-%m-%dT%H:%M:%S%.f%:z", &normalized)?.to_zoned_datetime()
+    }
+
+    fn format_rfc3339(value: &ZonedDateTime) -> String {
+        strtime::format("%Y-%m-%dT%H:%M:%S%:z", value).unwrap()
+    }
+
+    #[cfg(feature = "tz")]
+    fn utc(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> Result<ZonedDateTime, jiff::Error> {
+        civil::date(year, month, day)
+            .at(hour, minute, second, 0)
+            .to_zoned_datetime(TimeZone::UTC)
+    }
+
+    #[cfg(feature = "tz")]
+    fn zoned(
+        year: i16,
+        month: i8,
+        day: i8,
+        hour: i8,
+        minute: i8,
+        second: i8,
+        tz: &str,
+    ) -> Result<ZonedDateTime, jiff::Error> {
+        civil::date(year, month, day).at(hour, minute, second, 0).in_tz(tz)
+    }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
@@ -643,7 +710,7 @@ mod tests {
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
         let schedule = Schedule::new(pattern).unwrap();
-        let current = DateTime::parse_from_rfc3339(current).unwrap();
+        let current = parse_rfc3339(current).unwrap();
         let next = schedule.upcoming(&current);
 
         if expected == "None" {
@@ -658,7 +725,7 @@ mod tests {
             );
 
             assert_eq!(
-                next.unwrap().to_rfc3339(),
+                format_rfc3339(next.as_ref().unwrap()),
                 expected,
                 "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
             );
@@ -981,12 +1048,12 @@ mod tests {
     #[case("@hourly", "0 0 * * * * *")]
     fn valid_schedules_to_test(#[case] input: &str) {}
 
-    #[apply(valid_schedules_to_test)]
+    #[apply(self::valid_schedules_to_test)]
     fn test_schedule_display_and_new(#[case] input: &str, #[case] expected: &str) {
         assert_eq!(Schedule::new(input).unwrap().to_string(), expected);
     }
 
-    #[apply(valid_schedules_to_test)]
+    #[apply(self::valid_schedules_to_test)]
     // rstest's #[case] expansion references `_expected` by name even though this test body
     // doesn't need it, which trips clippy's used-underscore-binding lint as a false positive.
     #[allow(clippy::used_underscore_binding)]
@@ -1014,13 +1081,13 @@ mod tests {
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter() {
         let schedule = Schedule::new("0 0 12 * 1 MON 2024").unwrap();
-        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
+        let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
 
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T12:00:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-08T12:00:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-15T12:00:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-22T12:00:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-29T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-08T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-15T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-22T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-29T12:00:00+00:00");
         assert_eq!(iter.next(), None);
     }
 
@@ -1028,104 +1095,104 @@ mod tests {
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_second() {
         let schedule = Schedule::new("* * * * * *").unwrap();
-        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
+        let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
 
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:01+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:02+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:03+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:04+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:00:05+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:00:01+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:00:02+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:00:03+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:00:04+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:00:05+00:00");
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_minute() {
         let schedule = Schedule::new("* * * * *").unwrap();
-        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
+        let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
 
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:01:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:02:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:03:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:04:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T00:05:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:01:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:02:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:03:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:04:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T00:05:00+00:00");
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_hour() {
         let schedule = Schedule::new("13 * * * *").unwrap();
-        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T07:01:01+00:00").unwrap());
+        let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T07:01:01+00:00").unwrap());
 
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T07:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T08:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T09:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T10:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T11:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T07:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T08:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T09:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T10:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T11:13:00+00:00");
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_day() {
         let schedule = Schedule::new("22 5 * * *").unwrap();
-        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T04:01:01+00:00").unwrap());
+        let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T04:01:01+00:00").unwrap());
 
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T05:22:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-02T05:22:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-03T05:22:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-04T05:22:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-05T05:22:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T05:22:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-02T05:22:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-03T05:22:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-04T05:22:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-05T05:22:00+00:00");
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_month() {
         let schedule = Schedule::new("13 13 12 * *").unwrap();
-        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
+        let mut iter = schedule.iter(&parse_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
 
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-02-12T13:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-03-12T13:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-04-12T13:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-05-12T13:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-06-12T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-02-12T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-03-12T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-04-12T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-05-12T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-06-12T13:13:00+00:00");
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_weekday() {
         let schedule = Schedule::new("13 13 ? * *").unwrap();
-        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
+        let mut iter = schedule.iter(&parse_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
 
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-13T13:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-14T13:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-15T13:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-16T13:13:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-17T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-13T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-14T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-15T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-16T13:13:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-17T13:13:00+00:00");
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_iter_every_year() {
         let schedule = Schedule::new("30 12 22 6 ?").unwrap();
-        let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2021-01-12T13:13:01+00:00").unwrap());
+        let mut iter = schedule.iter(&parse_rfc3339("2021-01-12T13:13:01+00:00").unwrap());
 
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2021-06-22T12:30:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2022-06-22T12:30:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2023-06-22T12:30:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-06-22T12:30:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2025-06-22T12:30:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2021-06-22T12:30:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2022-06-22T12:30:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2023-06-22T12:30:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-06-22T12:30:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2025-06-22T12:30:00+00:00");
     }
 
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_schedule_into_iter() {
         let schedule = Schedule::new("0 0 12 * 1 MON 2024").unwrap();
-        let mut iter = schedule.into_iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
+        let mut iter = schedule.into_iter(&parse_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
 
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-01T12:00:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-08T12:00:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-15T12:00:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-22T12:00:00+00:00");
-        assert_eq!(iter.next().unwrap().to_rfc3339(), "2024-01-29T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-01T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-08T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-15T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-22T12:00:00+00:00");
+        assert_eq!(format_rfc3339(&iter.next().unwrap()), "2024-01-29T12:00:00+00:00");
         assert_eq!(iter.next(), None);
     }
 
@@ -1140,12 +1207,12 @@ mod tests {
     #[case("@minutely")]
     fn invalid_schedules_to_test(#[case] input: &str) {}
 
-    #[apply(invalid_schedules_to_test)]
+    #[apply(self::invalid_schedules_to_test)]
     fn test_invalid_schedule_constructor(#[case] input: &str) {
         assert!(Schedule::new(input).is_err(), "input = {input}");
     }
 
-    #[apply(invalid_schedules_to_test)]
+    #[apply(self::invalid_schedules_to_test)]
     fn test_try_from_invalid_string(#[case] input: &str) {
         assert!(Schedule::try_from(input).is_err(), "input = {input}");
         assert!(Schedule::from_str(input).is_err(), "input = {input}");
@@ -1179,7 +1246,7 @@ mod tests {
     #[timeout(Duration::from_secs(1))]
     fn test_edge_cases(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
         let schedule = Schedule::new(pattern).unwrap();
-        let current = DateTime::parse_from_rfc3339(current).unwrap();
+        let current = parse_rfc3339(current).unwrap();
         let next = schedule.upcoming(&current);
 
         if expected == "None" {
@@ -1194,14 +1261,14 @@ mod tests {
             );
 
             assert_eq!(
-                next.unwrap().to_rfc3339(),
+                format_rfc3339(next.as_ref().unwrap()),
                 expected,
                 "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
             );
         }
     }
 
-    #[apply(valid_schedules_to_test)]
+    #[apply(self::valid_schedules_to_test)]
     fn test_schedule_to_string(#[case] input: &str, #[case] expected: &str) {
         let schedule = Schedule::new(input).unwrap();
 
@@ -1214,11 +1281,13 @@ mod tests {
 
     #[cfg(feature = "tz")]
     mod tz {
-        use super::super::*;
-        use chrono::{Local, Utc};
+        use super::{format_rfc3339, parse_rfc3339, utc, zoned};
+        use crate::Schedule;
+        use jiff::SignedDuration;
         use rstest::rstest;
         use rstest_reuse::{apply, template};
-        use std::{fmt::Debug, time::Duration};
+        use std::str::FromStr;
+        use std::time::Duration;
 
         #[template]
         #[rstest]
@@ -1233,12 +1302,12 @@ mod tests {
         #[case("tz=Europe/Paris @yearly", "TZ=Europe/Paris 0 0 0 1 1 ? *")]
         fn valid_schedules_to_test(#[case] input: &str, #[case] expected: &str) {}
 
-        #[apply(valid_schedules_to_test)]
+        #[apply(self::valid_schedules_to_test)]
         fn test_schedule_display_and_new(#[case] input: &str, #[case] expected: &str) {
             assert_eq!(Schedule::new(input).unwrap().to_string(), expected);
         }
 
-        #[apply(valid_schedules_to_test)]
+        #[apply(self::valid_schedules_to_test)]
         // rstest's #[case] expansion references `_expected` by name even though this test body
         // doesn't need it, which trips clippy's used-underscore-binding lint as a false positive.
         #[allow(clippy::used_underscore_binding)]
@@ -1276,12 +1345,12 @@ mod tests {
         #[case("tz= @hourly")]
         fn invalid_schedules_to_test(#[case] input: &str) {}
 
-        #[apply(invalid_schedules_to_test)]
+        #[apply(self::invalid_schedules_to_test)]
         fn test_invalid_schedule_constructor(#[case] input: &str) {
             assert!(Schedule::new(input).is_err(), "input = {input}");
         }
 
-        #[apply(invalid_schedules_to_test)]
+        #[apply(self::invalid_schedules_to_test)]
         fn test_try_from_invalid_string(#[case] input: &str) {
             assert!(Schedule::try_from(input).is_err(), "input = {input}");
             assert!(Schedule::from_str(input).is_err(), "input = {input}");
@@ -1309,7 +1378,7 @@ mod tests {
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_upcoming(#[case] pattern: &str, #[case] current: &str, #[case] expected: &str) {
             let schedule = Schedule::new(pattern).unwrap();
-            let current = DateTime::parse_from_rfc3339(current).unwrap();
+            let current = parse_rfc3339(current).unwrap();
             let next = schedule.upcoming(&current);
 
             if expected == "None" {
@@ -1324,7 +1393,7 @@ mod tests {
                 );
 
                 assert_eq!(
-                    next.unwrap().to_rfc3339(),
+                    format_rfc3339(next.as_ref().unwrap()),
                     expected,
                     "pattern = {pattern}, schedule = {schedule:?}, current = {current}, next = {next:?}"
                 );
@@ -1335,30 +1404,30 @@ mod tests {
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter() {
             let schedule = Schedule::new("TZ=UTC 0 0 12 * 1 MON 2024").unwrap();
-            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
+            let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T00:00:00+00:00").unwrap());
 
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T12:00:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-08T12:00:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-15T12:00:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-22T12:00:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-29T12:00:00+00:00",
                 "schedule = {schedule}"
             );
@@ -1369,30 +1438,30 @@ mod tests {
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter_every_second() {
             let schedule = Schedule::new("TZ=EET * * * * * *").unwrap();
-            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
+            let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
 
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:00:01+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:00:02+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:00:03+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:00:04+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:00:05+00:00",
                 "schedule = {schedule}"
             );
@@ -1402,30 +1471,30 @@ mod tests {
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter_every_minute() {
             let schedule = Schedule::new("TZ=Europe/Kyiv * * * * *").unwrap();
-            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
+            let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T00:00:01+00:00").unwrap());
 
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:01:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:02:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:03:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:04:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T00:05:00+00:00",
                 "schedule = {schedule}"
             );
@@ -1435,30 +1504,30 @@ mod tests {
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter_every_hour() {
             let schedule = Schedule::new("TZ=Canada/Eastern 13 * * * *").unwrap();
-            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T07:01:01+00:00").unwrap());
+            let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T07:01:01+00:00").unwrap());
 
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T07:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T08:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T09:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T10:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T11:13:00+00:00",
                 "schedule = {schedule}"
             );
@@ -1468,30 +1537,30 @@ mod tests {
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter_every_day() {
             let schedule = Schedule::new("TZ=Asia/Tokyo 22 5 * * *").unwrap();
-            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-01T04:01:01+00:00").unwrap());
+            let mut iter = schedule.iter(&parse_rfc3339("2024-01-01T04:01:01+00:00").unwrap());
 
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-01T20:22:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-02T20:22:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-03T20:22:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-04T20:22:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-05T20:22:00+00:00",
                 "schedule = {schedule}"
             );
@@ -1501,30 +1570,30 @@ mod tests {
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter_every_month() {
             let schedule = Schedule::new("TZ=GMT 13 13 12 * *").unwrap();
-            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
+            let mut iter = schedule.iter(&parse_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
 
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-02-12T13:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-03-12T13:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-04-12T13:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-05-12T13:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-06-12T13:13:00+00:00",
                 "schedule = {schedule}"
             );
@@ -1534,30 +1603,30 @@ mod tests {
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter_every_weekday() {
             let schedule = Schedule::new("TZ=Antarctica/South_Pole 13 13 ? * *").unwrap();
-            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
+            let mut iter = schedule.iter(&parse_rfc3339("2024-01-12T13:13:01+00:00").unwrap());
 
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-13T00:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-14T00:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-15T00:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-16T00:13:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-01-17T00:13:00+00:00",
                 "schedule = {schedule}"
             );
@@ -1566,90 +1635,73 @@ mod tests {
         #[rstest]
         #[timeout(Duration::from_secs(1))]
         fn test_upcoming_partial_field_cascade_matches() {
-            use chrono::Utc;
-
             // Schedule: 0 0 10 1 1 * (Jan 1 at 10:00)
             // Starting at Jan 1 at 15:00: Year matches (2024), Month matches (1), Dom matches (1), Hour (10 < 15) fails!
             let schedule = Schedule::new("0 0 10 1 1 *").unwrap();
-            let now = Utc.with_ymd_and_hms(2024, 1, 1, 15, 0, 0).unwrap();
+            let now = utc(2024, 1, 1, 15, 0, 0).unwrap();
             let next = schedule.upcoming(&now).unwrap();
-            assert_eq!(next, Utc.with_ymd_and_hms(2025, 1, 1, 10, 0, 0).unwrap());
+            assert_eq!(next, utc(2025, 1, 1, 10, 0, 0).unwrap());
 
             // Schedule: 0 0 0 5 1 * (Jan 5 at 00:00)
             // Starting at Jan 10 at 00:00: Year matches (2024), Month matches (1), Dom (5 < 10) fails!
             let schedule2 = Schedule::new("0 0 0 5 1 *").unwrap();
-            let now2 = Utc.with_ymd_and_hms(2024, 1, 10, 0, 0, 0).unwrap();
+            let now2 = utc(2024, 1, 10, 0, 0, 0).unwrap();
             let next2 = schedule2.upcoming(&now2).unwrap();
-            assert_eq!(next2, Utc.with_ymd_and_hms(2025, 1, 5, 0, 0, 0).unwrap());
+            assert_eq!(next2, utc(2025, 1, 5, 0, 0, 0).unwrap());
         }
 
         #[rstest]
         #[timeout(Duration::from_secs(1))]
         fn test_schedule_iter_every_year() {
             let schedule = Schedule::new("TZ=Asia/Shanghai 30 12 22 6 ?").unwrap();
-            let mut iter = schedule.iter(&DateTime::parse_from_rfc3339("2021-01-12T13:13:01+00:00").unwrap());
+            let mut iter = schedule.iter(&parse_rfc3339("2021-01-12T13:13:01+00:00").unwrap());
 
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2021-06-22T04:30:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2022-06-22T04:30:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2023-06-22T04:30:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2024-06-22T04:30:00+00:00",
                 "schedule = {schedule}"
             );
             assert_eq!(
-                iter.next().unwrap().to_rfc3339(),
+                format_rfc3339(&iter.next().unwrap()),
                 "2025-06-22T04:30:00+00:00",
                 "schedule = {schedule}"
             );
         }
 
         #[rstest]
-        #[case(Utc, Utc)]
-        #[case(Utc, Local)]
-        #[case(Local, Utc)]
-        #[case(Local, Local)]
-        #[case(chrono_tz::EET, Utc)]
-        #[case(Utc, chrono_tz::EET)]
-        #[case(chrono_tz::EET, Local)]
-        #[case(Local, chrono_tz::EET)]
-        #[case(chrono_tz::EET, chrono_tz::EET)]
-        #[case(chrono_tz::EET, chrono_tz::Canada::Eastern)]
-        #[case(chrono_tz::Canada::Eastern, chrono_tz::EET)]
+        #[case("UTC", Some("UTC"))]
+        #[case("UTC", None)]
+        #[case("America/New_York", Some("UTC"))]
+        #[case("America/New_York", None)]
+        #[case("EET", Some("EET"))]
+        #[case("EET", Some("UTC"))]
+        #[case("EET", None)]
+        #[case("EET", Some("Canada/Eastern"))]
+        #[case("Canada/Eastern", Some("EET"))]
         #[timeout(Duration::from_secs(3))]
-        fn test_rough_iterator<T1: TimeZone + Debug, T2: TimeZone + Debug>(
-            #[case] current_tz: T1,
-            #[case] schedule_tz: T2,
-        ) {
+        fn test_rough_iterator(#[case] current_tz: &str, #[case] schedule_tz: Option<&str>) {
             use std::collections::BTreeSet;
 
             const TAKE_ITEMS: usize = (365 + 366) * 24 + 3;
 
-            let current = current_tz.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap();
-
-            let tz_str = format!("{schedule_tz:?}").to_uppercase();
-            let tz = if tz_str == "LOCAL" {
-                None
-            } else if tz_str == "Z" || tz_str == "UTC" {
-                Some(String::from("UTC"))
-            } else {
-                Some(format!("{schedule_tz:?}"))
-            };
-
-            let schedule = if let Some(tz) = tz {
-                Schedule::new(format!("TZ={tz} @hourly")).unwrap()
+            let current = zoned(2024, 3, 1, 0, 0, 0, current_tz).unwrap();
+            let schedule = if let Some(schedule_tz) = schedule_tz {
+                Schedule::new(format!("TZ={schedule_tz} @hourly")).unwrap()
             } else {
                 Schedule::new(" @hourly").unwrap()
             };
@@ -1658,8 +1710,8 @@ mod tests {
             assert_eq!(
                 result.len(),
                 TAKE_ITEMS,
-                "current_tz={current_tz:?}, schedule_tz={schedule_tz:?}, schedule='{schedule}', last={}",
-                result[result.len() - 1].to_rfc2822()
+                "current_tz={current_tz}, schedule_tz={schedule_tz:?}, schedule='{schedule}', last={}",
+                result[result.len() - 1]
             );
 
             // find duplicates in result
@@ -1671,15 +1723,13 @@ mod tests {
         #[rstest]
         #[timeout(Duration::from_secs(1))]
         fn test_dst_fall_back_daily() {
-            use chrono_tz::Europe::Kyiv;
-
             let schedule = Schedule::new("TZ=Europe/Kyiv 0 30 3 * * *").unwrap();
-            let mut current = Kyiv.with_ymd_and_hms(2024, 10, 25, 0, 0, 0).unwrap();
+            let mut current = zoned(2024, 10, 25, 0, 0, 0, "Europe/Kyiv").unwrap();
             let mut occurrences = Vec::new();
             for _ in 0..5 {
                 let next = schedule.upcoming(&current).unwrap();
-                occurrences.push(next.to_rfc3339());
-                current = next + chrono::Duration::seconds(1);
+                occurrences.push(format_rfc3339(&next));
+                current = next.checked_add(SignedDuration::from_secs(1)).unwrap();
             }
             assert_eq!(occurrences[0], "2024-10-25T03:30:00+03:00");
             assert_eq!(occurrences[1], "2024-10-26T03:30:00+03:00");
@@ -1691,15 +1741,13 @@ mod tests {
         #[rstest]
         #[timeout(Duration::from_secs(1))]
         fn test_dst_fall_back_hourly() {
-            use chrono_tz::Europe::Kyiv;
-
             let schedule = Schedule::new("TZ=Europe/Kyiv 0 30 * * * *").unwrap();
-            let mut current = Kyiv.with_ymd_and_hms(2024, 10, 27, 1, 0, 0).unwrap();
+            let mut current = zoned(2024, 10, 27, 1, 0, 0, "Europe/Kyiv").unwrap();
             let mut occurrences = Vec::new();
             for _ in 0..4 {
                 let next = schedule.upcoming(&current).unwrap();
-                occurrences.push(next.to_rfc3339());
-                current = next + chrono::Duration::seconds(1);
+                occurrences.push(format_rfc3339(&next));
+                current = next.checked_add(SignedDuration::from_secs(1)).unwrap();
             }
             assert_eq!(occurrences[0], "2024-10-27T01:30:00+03:00");
             assert_eq!(occurrences[1], "2024-10-27T02:30:00+03:00");
@@ -1710,15 +1758,13 @@ mod tests {
         #[rstest]
         #[timeout(Duration::from_secs(1))]
         fn test_dst_fall_back_without_tz_prefix() {
-            use chrono_tz::Europe::Kyiv;
-
             let schedule = Schedule::new("0 30 3 * * *").unwrap();
-            let mut current = Kyiv.with_ymd_and_hms(2024, 10, 25, 0, 0, 0).unwrap();
+            let mut current = zoned(2024, 10, 25, 0, 0, 0, "Europe/Kyiv").unwrap();
             let mut occurrences = Vec::new();
             for _ in 0..5 {
                 let next = schedule.upcoming(&current).unwrap();
-                occurrences.push(next.to_rfc3339());
-                current = next + chrono::Duration::seconds(1);
+                occurrences.push(format_rfc3339(&next));
+                current = next.checked_add(SignedDuration::from_secs(1)).unwrap();
             }
             assert_eq!(occurrences[0], "2024-10-25T03:30:00+03:00");
             assert_eq!(occurrences[1], "2024-10-26T03:30:00+03:00");
@@ -1730,22 +1776,18 @@ mod tests {
         #[rstest]
         #[timeout(Duration::from_secs(1))]
         fn test_dst_fall_back_annual() {
-            use chrono_tz::Europe::Kyiv;
-
             let schedule = Schedule::new("TZ=Europe/Kyiv 0 30 3 27 10 * *").unwrap();
-            let current = Kyiv.with_ymd_and_hms(2024, 10, 25, 0, 0, 0).unwrap();
+            let current = zoned(2024, 10, 25, 0, 0, 0, "Europe/Kyiv").unwrap();
             let next = schedule.upcoming(&current).unwrap();
-            assert_eq!(next.to_rfc3339(), "2024-10-27T03:30:00+03:00");
+            assert_eq!(format_rfc3339(&next), "2024-10-27T03:30:00+03:00");
         }
 
         #[rstest]
         #[timeout(Duration::from_secs(1))]
         fn test_sub_hour_dst_transition() {
-            use chrono_tz::Australia::Lord_Howe;
-
             // Lord Howe transitions +11:00 -> +10:30 (30 min shift)
             let schedule = Schedule::new("TZ=Australia/Lord_Howe 0 45 * * * *").unwrap();
-            let current = Lord_Howe.with_ymd_and_hms(2024, 4, 7, 0, 0, 0).unwrap();
+            let current = zoned(2024, 4, 7, 0, 0, 0, "Australia/Lord_Howe").unwrap();
             let mut iter = schedule.iter(&current);
             let next1 = iter.next().unwrap();
             let next2 = iter.next().unwrap();
