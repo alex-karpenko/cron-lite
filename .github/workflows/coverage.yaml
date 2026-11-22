@@ -16,13 +16,18 @@ jobs:
   codecov:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup for testing
         run: |
           mkdir grcov
           curl -sL https://github.com/mozilla/grcov/releases/latest/download/grcov-x86_64-unknown-linux-gnu.tar.bz2 | (cd grcov ; tar jxf -)
           rustup toolchain add stable --component llvm-tools-preview
           rustup override set stable
+
+      - name: Install legacy tzdata
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tzdata-legacy
 
       - name: Test
         env:
