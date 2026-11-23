@@ -559,8 +559,9 @@ impl Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{parse_rfc3339, zoned};
     use futures::{select, StreamExt};
-    use jiff::{civil, fmt::strtime, tz::TimeZone, SignedDuration};
+    use jiff::{civil, tz::TimeZone, SignedDuration};
     use rstest::rstest;
 
     const ACCEPTED_SLEEP_DRIFT: Duration = Duration::from_millis(5);
@@ -582,24 +583,6 @@ mod tests {
         civil::date(year, month, day)
             .at(hour, minute, second, nanos)
             .to_zoned_datetime(TimeZone::UTC)
-    }
-
-    fn kyiv(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> Result<ZonedDateTime, jiff::Error> {
-        civil::date(year, month, day)
-            .at(hour, minute, second, 0)
-            .in_tz("Europe/Kyiv")
-    }
-
-    fn parse_rfc3339(input: &str) -> ZonedDateTime {
-        let normalized = if let Some(prefix) = input.strip_suffix('Z') {
-            format!("{prefix}+00:00")
-        } else {
-            input.to_string()
-        };
-        strtime::parse("%Y-%m-%dT%H:%M:%S%.f%:z", &normalized)
-            .unwrap()
-            .to_zoned_datetime()
-            .unwrap()
     }
 
     fn test_upcoming_instant_case(schedule: &str, current: &ZonedDateTime, expected_delta: Duration) {
@@ -691,7 +674,7 @@ mod tests {
         #[case] current: &str,
         #[case] expected_delta: Duration,
     ) {
-        let current = parse_rfc3339(current);
+        let current = parse_rfc3339(current).unwrap();
         test_upcoming_instant_case(schedule, &current, expected_delta);
     }
 
@@ -718,17 +701,17 @@ mod tests {
         #[case] current: &str,
         #[case] expected_delta: Duration,
     ) {
-        let current = parse_rfc3339(current);
+        let current = parse_rfc3339(current).unwrap();
         test_upcoming_instant_case(schedule, &current, expected_delta);
     }
 
     #[rstest]
-    #[case("TZ=Europe/Kyiv 1 5 * * *", kyiv(2025, 3, 30, 2, 59, 59).unwrap(), Duration::from_secs(60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=UTC 1 5 * * *", kyiv(2025, 3, 30, 2, 59, 59).unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=Europe/Paris 1 5 * * *", kyiv(2025, 3, 30, 2, 59, 59).unwrap(), Duration::from_secs(2*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=Europe/Kyiv 1 5 * * *", kyiv(2025, 1, 1, 2, 59, 59).unwrap(), Duration::from_secs(2*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=UTC 1 5 * * *", kyiv(2025, 1, 1, 2, 59, 59).unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=Europe/Paris 1 5 * * *", kyiv(2025, 1, 1, 2, 59, 59).unwrap(), Duration::from_secs(3*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=Europe/Kyiv 1 5 * * *", zoned(2025, 3, 30, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=UTC 1 5 * * *", zoned(2025, 3, 30, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=Europe/Paris 1 5 * * *", zoned(2025, 3, 30, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(2*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=Europe/Kyiv 1 5 * * *", zoned(2025, 1, 1, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(2*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=UTC 1 5 * * *", zoned(2025, 1, 1, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=Europe/Paris 1 5 * * *", zoned(2025, 1, 1, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(3*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
     #[timeout(Duration::from_secs(3))]
     fn test_upcoming_instant_with_both_tz(
         #[case] schedule: &str,

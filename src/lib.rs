@@ -297,6 +297,8 @@ mod pattern;
 /// Cron schedule pattern parser and upcoming events generator.
 pub mod schedule;
 mod series;
+#[cfg(test)]
+mod test_utils;
 mod utils;
 
 // Re-export of public entities.
