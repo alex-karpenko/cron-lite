@@ -2,8 +2,8 @@ use crate::{
     pattern::{make_local_datetime, Pattern, PatternItem, PatternType, PatternValueType},
     utils, CronError, Result,
 };
-use jiff::tz::TimeZone;
-use jiff::{SignedDuration, ZonedDateTime};
+use jiff::tz::{AmbiguousOffset, TimeZone};
+use jiff::{SignedDuration, Timestamp, ZonedDateTime};
 use std::{
     fmt::Display,
     hash::{Hash, Hasher},
@@ -145,6 +145,11 @@ impl Schedule {
     /// - calculates the upcoming event's time;
     /// - converts the obtained upcoming value back to the timezone of the `current` instance.
     ///
+    /// Daylight saving time transitions: a local time that occurs twice (clocks go back) fires once, at its earlier
+    /// occurrence; a local time that doesn't exist (clocks go forward) is skipped. If `current` lies in the second
+    /// pass of a repeated interval, the upcoming event is the first one after that interval, so the returned value is
+    /// never earlier than `current`.
+    ///
     /// Returns `None` if there is no time for the upcoming event.
     #[must_use]
     pub fn upcoming(&self, current: &ZonedDateTime) -> Option<ZonedDateTime> {
@@ -162,18 +167,26 @@ impl Schedule {
     ///
     /// Returns `None` if there is no upcoming event.
     fn upcoming_impl(&self, current: &ZonedDateTime) -> Option<ZonedDateTime> {
-        // Normalize current time to the start of the whole second.
-        let mut current = if current.subsec_nanosecond() > 0 {
-            current
-                .with()
-                .subsec_nanosecond(0)
-                .build()
-                .ok()?
-                .checked_add(SignedDuration::from_secs(1))
-                .ok()?
-        } else {
-            current.clone()
-        };
+        let start = ceil_to_second(current)?;
+        let next = self.upcoming_from(&start)?;
+        if next.timestamp() >= start.timestamp() {
+            return Some(next);
+        }
+
+        // Local times are resolved to their earlier occurrence, so a result in the past means `start` lies in the
+        // second pass of a repeated (fall-back) interval: the events of that interval have already happened.
+        // Continue searching right after the repeated interval.
+        let resume = end_of_fold(&start)?;
+        self.upcoming_from(&resume)
+            .filter(|next| next.timestamp() >= start.timestamp())
+    }
+
+    /// Searches for the upcoming event starting from (and including) `current`, which must be a whole second.
+    ///
+    /// Ambiguous local times are resolved to their earlier occurrence, so the result can be earlier than `current`
+    /// if `current` lies in the second pass of a repeated (fall-back) interval; see [`Self::upcoming_impl`].
+    fn upcoming_from(&self, current: &ZonedDateTime) -> Option<ZonedDateTime> {
+        let mut current = current.clone();
 
         let mut year = Some(current.year() as PatternValueType);
         let mut month = Some(current.month() as PatternValueType);
@@ -395,6 +408,44 @@ impl Hash for Schedule {
         self.second.hash(state);
         self.tz_name.hash(state);
     }
+}
+
+/// Rounds `current` up to the next whole second (or returns it as is if it is already a whole second).
+///
+/// The rounding is done on the absolute timestamp, so the result keeps the UTC offset of the instant it lands on,
+/// even inside a repeated (fall-back) interval, where re-resolving the local time would be ambiguous.
+fn ceil_to_second(current: &ZonedDateTime) -> Option<ZonedDateTime> {
+    let ts = current.timestamp();
+    let nanos = ts.subsec_nanosecond();
+    if nanos == 0 {
+        return Some(current.clone());
+    }
+
+    // For negative timestamps the sub-second part is negative, and truncation already rounds up.
+    let seconds = if nanos > 0 {
+        ts.as_second().checked_add(1)?
+    } else {
+        ts.as_second()
+    };
+    let ts = Timestamp::new(seconds, 0).ok()?;
+    Some(ZonedDateTime::new(ts, current.time_zone().clone()))
+}
+
+/// Returns the first instant after the repeated (fall-back) interval that `current` lies in.
+///
+/// Returns `None` if the local time of `current` is not ambiguous.
+fn end_of_fold(current: &ZonedDateTime) -> Option<ZonedDateTime> {
+    let tz = current.time_zone();
+    let AmbiguousOffset::Fold { before, after } = tz.to_ambiguous_zoned_datetime(current.datetime()).offset() else {
+        return None;
+    };
+
+    // The transition that started the repeated interval is the latest one at or before `current`.
+    let probe = current.timestamp().checked_add(SignedDuration::from_nanos(1)).ok()?;
+    let transition = tz.preceding(probe).next()?;
+    let fold_length = SignedDuration::from_secs(i64::from(before.seconds()) - i64::from(after.seconds()));
+    let end = transition.timestamp().checked_add(fold_length).ok()?;
+    Some(ZonedDateTime::new(end, tz.clone()))
 }
 
 /// Increments the current year and sets all other elements to their first valid values.
@@ -1240,7 +1291,7 @@ mod tests {
     mod tz {
         use super::{format_rfc3339, parse_rfc3339, utc, zoned};
         use crate::Schedule;
-        use jiff::SignedDuration;
+        use jiff::{tz::TimeZone, SignedDuration};
         use rstest::rstest;
         use rstest_reuse::{apply, template};
         use std::str::FromStr;
@@ -1769,6 +1820,80 @@ mod tests {
             let next1 = iter.next().unwrap();
             let next2 = iter.next().unwrap();
             assert!(next2 > next1);
+        }
+
+        /// Kyiv, 2024-10-27: 04:00+03:00 -> 03:00+02:00, so local times 03:00:00..03:59:59 occur twice.
+        /// Events fire at the earlier occurrence only, so when `current` is in the second pass, the upcoming event
+        /// must be after the repeated interval, never in the past.
+        #[rstest]
+        #[timeout(Duration::from_secs(1))]
+        // second pass of the repeated hour
+        #[case("0 * * * * *", "2024-10-27T03:10:00+02:00", "2024-10-27T04:00:00+02:00")]
+        #[case("0 * * * * *", "2024-10-27T03:00:00+02:00", "2024-10-27T04:00:00+02:00")]
+        #[case("* * * * * *", "2024-10-27T03:10:00.5+02:00", "2024-10-27T04:00:00+02:00")]
+        #[case("0 0 4 * * *", "2024-10-27T03:59:59+02:00", "2024-10-27T04:00:00+02:00")]
+        #[case("0 30 3 27 10 *", "2024-10-27T03:10:00+02:00", "2025-10-27T03:30:00+02:00")]
+        // first pass of the repeated hour: unchanged behavior
+        #[case("0 * * * * *", "2024-10-27T03:10:00+03:00", "2024-10-27T03:10:00+03:00")]
+        #[case("0 30 3 27 10 *", "2024-10-27T03:10:00+03:00", "2024-10-27T03:30:00+03:00")]
+        // rounding up a sub-second value at the end of the first pass lands in the second pass
+        #[case("* * * * * *", "2024-10-27T03:59:59.5+03:00", "2024-10-27T04:00:00+02:00")]
+        fn test_dst_fall_back_current_in_repeated_hour(
+            #[case] schedule: &str,
+            #[case] current: &str,
+            #[case] expected: &str,
+        ) {
+            let kyiv = TimeZone::get("Europe/Kyiv").unwrap();
+            let current = parse_rfc3339(current).unwrap();
+
+            // Schedule without timezone, `current` in Kyiv.
+            let next = Schedule::new(schedule)
+                .unwrap()
+                .upcoming(&current.with_time_zone(kyiv.clone()))
+                .unwrap();
+            assert_eq!(
+                format_rfc3339(&next),
+                expected,
+                "schedule={schedule}, current={current}"
+            );
+
+            // Schedule in Kyiv, `current` in UTC.
+            let next_utc = Schedule::new(format!("TZ=Europe/Kyiv {schedule}"))
+                .unwrap()
+                .upcoming(&current.with_time_zone(TimeZone::UTC))
+                .unwrap();
+            assert_eq!(
+                next_utc.timestamp(),
+                next.timestamp(),
+                "schedule={schedule}, current={current}"
+            );
+        }
+
+        #[rstest]
+        #[timeout(Duration::from_secs(5))]
+        #[case("* * * * * *")]
+        #[case("0 * * * * *")]
+        #[case("0 */15 * * * *")]
+        #[case("0 0 * * * *")]
+        #[case("0 30 3 * * *")]
+        #[case("0 0 3,4 * * *")]
+        fn test_dst_fall_back_upcoming_never_in_past(#[case] schedule: &str) {
+            let schedule = Schedule::new(format!("TZ=Europe/Kyiv {schedule}")).unwrap();
+            let end = utc(2024, 10, 27, 3, 0, 0).unwrap();
+            let step = SignedDuration::from_millis(7 * 60 * 1000 + 13_500);
+            let mut current = utc(2024, 10, 26, 23, 0, 0).unwrap();
+            while current < end {
+                let next = schedule.upcoming(&current).unwrap();
+                assert!(next >= current, "schedule={schedule}, current={current}, next={next}");
+
+                let mut iter = schedule.iter(&current).take(5);
+                let mut prev = iter.next().unwrap();
+                for item in iter {
+                    assert!(item > prev, "schedule={schedule}, current={current}, {item} <= {prev}");
+                    prev = item;
+                }
+                current = current.checked_add(step).unwrap();
+            }
         }
     }
 }
