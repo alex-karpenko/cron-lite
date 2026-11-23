@@ -223,12 +223,12 @@ impl Schedule {
 
             current = match make_local_datetime(
                 current.time_zone(),
-                i32::from(year?),
-                u32::from(month?),
-                u32::from(dom?),
-                u32::from(hour?),
-                u32::from(minute?),
-                u32::from(second?),
+                i16::try_from(year?).ok()?,
+                i8::try_from(month?).ok()?,
+                i8::try_from(dom?).ok()?,
+                i8::try_from(hour?).ok()?,
+                i8::try_from(minute?).ok()?,
+                i8::try_from(second?).ok()?,
             ) {
                 Some(updated_current) => updated_current,
                 None => {
@@ -296,12 +296,12 @@ impl Schedule {
 
         make_local_datetime(
             current.time_zone(),
-            i32::from(year?),
-            u32::from(month?),
-            u32::from(dom?),
-            u32::from(hour?),
-            u32::from(minute?),
-            u32::from(second?),
+            i16::try_from(year?).ok()?,
+            i8::try_from(month?).ok()?,
+            i8::try_from(dom?).ok()?,
+            i8::try_from(hour?).ok()?,
+            i8::try_from(minute?).ok()?,
+            i8::try_from(second?).ok()?,
         )
     }
 

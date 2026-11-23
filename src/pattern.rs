@@ -17,19 +17,13 @@ pub(crate) type PatternValueType = u16;
 #[inline]
 pub(crate) fn make_local_datetime(
     tz: &TimeZone,
-    year: i32,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
+    year: i16,
+    month: i8,
+    day: i8,
+    hour: i8,
+    minute: i8,
+    second: i8,
 ) -> Option<ZonedDateTime> {
-    let year = i16::try_from(year).ok()?;
-    let month = i8::try_from(month).ok()?;
-    let day = i8::try_from(day).ok()?;
-    let hour = i8::try_from(hour).ok()?;
-    let minute = i8::try_from(minute).ok()?;
-    let second = i8::try_from(second).ok()?;
     let dt = civil::DateTime::new(year, month, day, hour, minute, second, 0).ok()?;
     let ambiguous = tz.to_ambiguous_zoned_datetime(dt);
     match ambiguous.offset() {
@@ -39,12 +33,7 @@ pub(crate) fn make_local_datetime(
 }
 
 #[inline]
-pub(crate) fn make_local_datetime_start_of_day(
-    tz: &TimeZone,
-    year: i32,
-    month: u32,
-    day: u32,
-) -> Option<ZonedDateTime> {
+pub(crate) fn make_local_datetime_start_of_day(tz: &TimeZone, year: i16, month: i8, day: i8) -> Option<ZonedDateTime> {
     if let Some(dt) = make_local_datetime(tz, year, month, day, 0, 0, 0) {
         return Some(dt);
     }
@@ -66,10 +55,10 @@ pub(crate) fn make_local_datetime_start_of_day(
 #[inline]
 pub(crate) fn make_local_datetime_start_of_hour(
     tz: &TimeZone,
-    year: i32,
-    month: u32,
-    day: u32,
-    hour: u32,
+    year: i16,
+    month: i8,
+    day: i8,
+    hour: i8,
 ) -> Option<ZonedDateTime> {
     if let Some(dt) = make_local_datetime(tz, year, month, day, hour, 0, 0) {
         return Some(dt);
@@ -282,22 +271,27 @@ impl Pattern {
             if current_val > start {
                 match self.type_ {
                     PatternType::Years => {
-                        *current = make_local_datetime_start_of_day(current.time_zone(), i32::from(current_val), 1, 1)?;
+                        *current = make_local_datetime_start_of_day(
+                            current.time_zone(),
+                            i16::try_from(current_val).ok()?,
+                            1,
+                            1,
+                        )?;
                     }
                     PatternType::Months => {
                         *current = make_local_datetime_start_of_day(
                             current.time_zone(),
-                            i32::from(current.year()),
-                            u32::from(current_val),
+                            current.year(),
+                            i8::try_from(current_val).ok()?,
                             1,
                         )?;
                     }
                     PatternType::Doms | PatternType::Dows => {
                         *current = make_local_datetime_start_of_day(
                             current.time_zone(),
-                            i32::from(current.year()),
-                            u32::try_from(current.month()).unwrap(),
-                            u32::from(current_val),
+                            current.year(),
+                            current.month(),
+                            i8::try_from(current_val).ok()?,
                         )?;
                     }
                     PatternType::Hours => {
@@ -306,10 +300,10 @@ impl Pattern {
                             if let Some(h) = candidate {
                                 if let Some(updated) = make_local_datetime_start_of_hour(
                                     current.time_zone(),
-                                    i32::from(current.year()),
-                                    u32::try_from(current.month()).unwrap(),
-                                    u32::try_from(current.day()).unwrap(),
-                                    u32::from(h),
+                                    current.year(),
+                                    current.month(),
+                                    current.day(),
+                                    i8::try_from(h).ok()?,
                                 ) {
                                     *current = updated;
                                     value = Some(h);
@@ -335,11 +329,11 @@ impl Pattern {
                             if let Some(m) = candidate {
                                 if let Some(updated) = make_local_datetime(
                                     current.time_zone(),
-                                    i32::from(current.year()),
-                                    u32::try_from(current.month()).unwrap(),
-                                    u32::try_from(current.day()).unwrap(),
-                                    u32::try_from(current.hour()).unwrap(),
-                                    u32::from(m),
+                                    current.year(),
+                                    current.month(),
+                                    current.day(),
+                                    current.hour(),
+                                    i8::try_from(m).ok()?,
                                     0,
                                 ) {
                                     *current = updated;
@@ -366,12 +360,12 @@ impl Pattern {
                             if let Some(s) = candidate {
                                 if let Some(updated) = make_local_datetime(
                                     current.time_zone(),
-                                    i32::from(current.year()),
-                                    u32::try_from(current.month()).unwrap(),
-                                    u32::try_from(current.day()).unwrap(),
-                                    u32::try_from(current.hour()).unwrap(),
-                                    u32::try_from(current.minute()).unwrap(),
-                                    u32::from(s),
+                                    current.year(),
+                                    current.month(),
+                                    current.day(),
+                                    current.hour(),
+                                    current.minute(),
+                                    i8::try_from(s).ok()?,
                                 ) {
                                     *current = updated;
                                     value = Some(s);
