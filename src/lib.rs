@@ -283,9 +283,10 @@
 //! ```
 //!
 //! `CronEvent::Ok`, `CronEvent::Missed`, and the iterator items still have the same structure, but their timestamp is a
-//! `jiff::ZonedDateTime`. Finally, review DST-sensitive schedules: ambiguous local times resolve to the earlier
-//! occurrence, and nonexistent local times in a spring-forward gap are skipped ([`Schedule::upcoming`] returns `None`
-//! and the iterator ends).
+//! `jiff::ZonedDateTime`. DST handling is unchanged from 0.4: when a local time occurs twice (fall-back), the event fires
+//! once, at the earlier occurrence; when a local time doesn't exist (spring-forward gap), that occurrence is skipped and
+//! the schedule continues with the next valid time. For example, `TZ=Europe/Kyiv 0 30 3 * * *` doesn't fire on 2025-03-30
+//! (03:00–03:59 doesn't exist that day) and next fires on 2025-03-31 at 03:30.
 
 #[cfg(feature = "async")]
 /// Provides several additional methods to [`Schedule`] to use in asynchronous code with any runtime.
