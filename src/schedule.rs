@@ -81,8 +81,10 @@ impl Schedule {
             if let Some((prefix, tz_str)) = elements[0].split_once('=') {
                 if prefix.eq_ignore_ascii_case("tz") {
                     if let Ok(tz_value) = TimeZone::get(tz_str) {
+                        // Timezone lookup is case-insensitive: store the name as spelled in the tz database,
+                        // so that `europe/kyiv` and `Europe/Kyiv` produce equal schedules with the same `Display`.
+                        tz_name = Some(tz_value.iana_name().unwrap_or(tz_str).to_string());
                         tz = Some(tz_value);
-                        tz_name = Some(tz_str.to_string());
                         elements.remove(0);
                     } else {
                         return Err(CronError::InvalidTimeZone(tz_str.to_string()));
@@ -1255,7 +1257,27 @@ mod tests {
         #[case("Tz=Asia/Tokyo @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
         #[case("tz=Asia/Tokyo @yearly", "TZ=Asia/Tokyo 0 0 0 1 1 ? *")]
         #[case("tz=Europe/Paris @yearly", "TZ=Europe/Paris 0 0 0 1 1 ? *")]
+        #[case("TZ=europe/kyiv @hourly", "TZ=Europe/Kyiv 0 0 * * * * *")]
+        #[case("TZ=EUROPE/PARIS @hourly", "TZ=Europe/Paris 0 0 * * * * *")]
+        #[case("tz=utc @hourly", "TZ=UTC 0 0 * * * * *")]
+        #[case("TZ=eet @hourly", "TZ=EET 0 0 * * * * *")]
+        #[case("TZ=us/pacific @hourly", "TZ=US/Pacific 0 0 * * * * *")]
         fn valid_schedules_to_test(#[case] input: &str, #[case] expected: &str) {}
+
+        #[rstest]
+        #[case("TZ=europe/kyiv 0 0 * * *", "TZ=Europe/Kyiv 0 0 * * *")]
+        #[case("tz=UTC @daily", "TZ=utc @daily")]
+        #[case("TZ=us/pacific */5 * * * *", "TZ=US/PACIFIC */5 * * * *")]
+        fn test_tz_name_case_insensitive_eq_and_hash(#[case] left: &str, #[case] right: &str) {
+            use std::hash::{BuildHasher, RandomState};
+
+            let left = Schedule::new(left).unwrap();
+            let right = Schedule::new(right).unwrap();
+            let hasher = RandomState::new();
+            assert_eq!(left, right);
+            assert_eq!(hasher.hash_one(&left), hasher.hash_one(&right));
+            assert_eq!(left.to_string(), right.to_string());
+        }
 
         #[apply(self::valid_schedules_to_test)]
         fn test_schedule_display_and_new(#[case] input: &str, #[case] expected: &str) {
