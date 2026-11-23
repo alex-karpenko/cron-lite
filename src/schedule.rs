@@ -2,7 +2,6 @@ use crate::{
     pattern::{make_local_datetime, Pattern, PatternItem, PatternType, PatternValueType},
     utils, CronError, Result,
 };
-#[cfg(feature = "tz")]
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, ZonedDateTime};
 use std::{
@@ -60,9 +59,7 @@ pub struct Schedule {
     hour: Pattern,
     minute: Pattern,
     second: Pattern,
-    #[cfg(feature = "tz")]
     tz: Option<TimeZone>,
-    #[cfg(feature = "tz")]
     tz_name: Option<String>,
 }
 
@@ -76,13 +73,10 @@ impl Schedule {
     pub fn new(pattern: impl AsRef<str>) -> Result<Self> {
         let pattern_str = pattern.as_ref();
         let mut elements: Vec<&str> = pattern_str.split_whitespace().collect();
-        #[cfg(feature = "tz")]
         let mut tz = None;
-        #[cfg(feature = "tz")]
         let mut tz_name = None;
 
         // Parse and define TZ, if present
-        #[cfg(feature = "tz")]
         if elements.len() >= 2 {
             if let Some((prefix, tz_str)) = elements[0].split_once('=') {
                 if prefix.eq_ignore_ascii_case("tz") {
@@ -126,9 +120,7 @@ impl Schedule {
             month: Pattern::parse(PatternType::Months, elements[4])?,
             dow: Pattern::parse(PatternType::Dows, elements[5])?,
             year: Pattern::parse(PatternType::Years, elements[6])?,
-            #[cfg(feature = "tz")]
             tz,
-            #[cfg(feature = "tz")]
             tz_name,
         };
 
@@ -142,38 +134,16 @@ impl Schedule {
 
     /// Returns the time of the upcoming cron event, starting from the provided `current` value (inclusively).
     ///
-    /// If the `tz` feature isn't enabled,
-    /// this method assumes that the schedule's timezone is the same as the timezone of the provided `current`
-    /// instance.
+    /// If the schedule has no timezone, this method assumes that the schedule's timezone is the same as the timezone of
+    /// the provided `current` instance.
     ///
-    /// If the `tz` feature is enabled and the [schedule uses a timezone](crate#schedule-with-timezone),
+    /// If the [schedule uses a timezone](crate#schedule-with-timezone),
     /// then the method calculates the time of the upcoming event with respect to the schedule's timezone:
     /// - converts `current` into the schedule's timezone;
     /// - calculates the upcoming event's time;
     /// - converts the obtained upcoming value back to the timezone of the `current` instance.
     ///
     /// Returns `None` if there is no time for the upcoming event.
-    #[cfg(not(feature = "tz"))]
-    #[inline]
-    #[must_use]
-    pub fn upcoming(&self, current: &ZonedDateTime) -> Option<ZonedDateTime> {
-        self.upcoming_impl(current)
-    }
-
-    /// Returns the time of the upcoming cron event, starting from the provided `current` value (inclusively).
-    ///
-    /// If the `tz` feature isn't enabled,
-    /// this method assumes that the schedule's timezone is the same as the timezone of the provided `current`
-    /// instance.
-    ///
-    /// If the `tz` feature is enabled and the [schedule uses a timezone](crate#schedule-with-timezone),
-    /// then the method calculates the time of the upcoming event with respect to the schedule's timezone:
-    /// - converts `current` into the schedule's timezone;
-    /// - calculates the upcoming event's time;
-    /// - converts the obtained upcoming value back to the timezone of the `current` instance.
-    ///
-    /// Returns `None` if there is no time for the upcoming event.
-    #[cfg(feature = "tz")]
     #[must_use]
     pub fn upcoming(&self, current: &ZonedDateTime) -> Option<ZonedDateTime> {
         if let Some(schedule_tz) = &self.tz {
@@ -396,16 +366,6 @@ impl FromStr for Schedule {
 
 impl Display for Schedule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        #[cfg(not(feature = "tz"))]
-        {
-            write!(
-                f,
-                "{} {} {} {} {} {} {}",
-                self.second, self.minute, self.hour, self.dom, self.month, self.dow, self.year
-            )
-        }
-
-        #[cfg(feature = "tz")]
         if let Some(tz) = &self.tz_name {
             write!(
                 f,
@@ -431,7 +391,6 @@ impl Hash for Schedule {
         self.hour.hash(state);
         self.minute.hash(state);
         self.second.hash(state);
-        #[cfg(feature = "tz")]
         self.tz_name.hash(state);
     }
 }
@@ -546,7 +505,6 @@ fn inc_minute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "tz")]
     use jiff::{civil, tz::TimeZone};
     use jiff::{fmt::strtime, ZonedDateTime};
     use rstest::rstest;
@@ -566,14 +524,12 @@ mod tests {
         strtime::format("%Y-%m-%dT%H:%M:%S%:z", value).unwrap()
     }
 
-    #[cfg(feature = "tz")]
     fn utc(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> Result<ZonedDateTime, jiff::Error> {
         civil::date(year, month, day)
             .at(hour, minute, second, 0)
             .to_zoned_datetime(TimeZone::UTC)
     }
 
-    #[cfg(feature = "tz")]
     fn zoned(
         year: i16,
         month: i8,
@@ -1279,7 +1235,6 @@ mod tests {
         assert_eq!(string, expected);
     }
 
-    #[cfg(feature = "tz")]
     mod tz {
         use super::{format_rfc3339, parse_rfc3339, utc, zoned};
         use crate::Schedule;

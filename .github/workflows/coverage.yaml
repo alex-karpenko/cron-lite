@@ -24,6 +24,8 @@ jobs:
           rustup toolchain add stable --component llvm-tools-preview
           rustup override set stable
 
+      # Tests cover legacy timezone names (EET, Canada/Eastern, US/Pacific),
+      # which Ubuntu 24.04+ ships in a separate package.
       - name: Install legacy tzdata
         run: |
           sudo apt-get update

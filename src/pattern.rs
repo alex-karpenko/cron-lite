@@ -1451,7 +1451,6 @@ mod tests {
         assert_eq!(current, utc(2024, 6, 1, 0, 0, 0).unwrap());
     }
 
-    #[cfg(feature = "tz")]
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_make_local_datetime_start_of_day_dst_gap() {
@@ -1462,7 +1461,6 @@ mod tests {
         assert_eq!(dt.unwrap().hour(), 1);
     }
 
-    #[cfg(feature = "tz")]
     #[rstest]
     #[timeout(Duration::from_secs(1))]
     fn test_pattern_next_minutes_dst_gap_retry() {

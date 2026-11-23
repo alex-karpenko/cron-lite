@@ -584,7 +584,6 @@ mod tests {
             .to_zoned_datetime(TimeZone::UTC)
     }
 
-    #[cfg(feature = "tz")]
     fn kyiv(year: i16, month: i8, day: i8, hour: i8, minute: i8, second: i8) -> Result<ZonedDateTime, jiff::Error> {
         civil::date(year, month, day)
             .at(hour, minute, second, 0)
@@ -696,7 +695,6 @@ mod tests {
         test_upcoming_instant_case(schedule, &current, expected_delta);
     }
 
-    #[cfg(feature = "tz")]
     #[rstest]
     #[case(
         "TZ=Europe/Kyiv */2 * * * * *",
@@ -724,7 +722,6 @@ mod tests {
         test_upcoming_instant_case(schedule, &current, expected_delta);
     }
 
-    #[cfg(feature = "tz")]
     #[rstest]
     #[case("TZ=Europe/Kyiv 1 5 * * *", kyiv(2025, 3, 30, 2, 59, 59).unwrap(), Duration::from_secs(60*60 /*hours*/ + 60 /*minutes*/ + 1))]
     #[case("TZ=UTC 1 5 * * *", kyiv(2025, 3, 30, 2, 59, 59).unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]

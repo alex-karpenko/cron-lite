@@ -15,7 +15,6 @@ const EXPRESSIONS: &[&str] = &[
 const NOW: &[&str] = &["1999-12-31T23:59:59Z", "2000-01-01T00:00:00Z", "2099-12-31T23:59:59Z"];
 const TAKE_SAMPLES: usize = 10_000;
 
-#[cfg(feature = "tz")]
 const TIME_ZONES: &[&str] = &["UTC", "EET", "Europe/Kyiv"];
 
 fn parse_now(input: &str) -> ZonedDateTime {
@@ -29,7 +28,6 @@ pub fn new_benchmark(c: &mut Criterion) {
             b.iter(|| Schedule::new(*e).unwrap())
         });
 
-        #[cfg(feature = "tz")]
         for tz in TIME_ZONES {
             let expression = format!("TZ={tz} {expression}");
             group.bench_with_input(BenchmarkId::from_parameter(expression.clone()), &expression, |b, e| {
@@ -52,7 +50,6 @@ pub fn upcoming_benchmark(c: &mut Criterion) {
                 |b, (now, schedule)| b.iter(|| schedule.upcoming(now)),
             );
 
-            #[cfg(feature = "tz")]
             for tz in TIME_ZONES {
                 let expression = format!("TZ={tz} {expression}");
                 let schedule = Schedule::new(&expression).unwrap();
@@ -79,7 +76,6 @@ pub fn iter_benchmark(c: &mut Criterion) {
                 |b, (now, schedule)| b.iter(|| schedule.iter(now).take(TAKE_SAMPLES).count()),
             );
 
-            #[cfg(feature = "tz")]
             for tz in TIME_ZONES {
                 let expression = format!("TZ={tz} {expression}");
                 let schedule = Schedule::new(&expression).unwrap();

@@ -16,7 +16,6 @@ exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".g
 default = []
 async = ["dep:futures", "dep:pin-project"]
 serde = ["dep:serde"]
-tz = []
 
 [dependencies]
 futures = { version = "0.3.31", default-features = false, features = ["async-await"], optional = true }

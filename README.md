@@ -71,10 +71,24 @@ found [here](https://en.wikipedia.org/wiki/Cron#Cron_expression) (this is not co
 
 ### Schedule with timezone
 
-If the `tz` feature is enabled, it's possible to prefix a cron schedule with a timezone, for example:
+It's possible to prefix a cron schedule with a timezone, for example:
 
 - `TZ=Europe/Paris @monthly`
-- `TZ=EET 0 12 * * *`
+- `TZ=Europe/Athens 0 12 * * *`
+- `TZ=EET 0 12 * * *` (legacy name, see the note below)
+
+Timezone names are resolved at runtime from the operating system's timezone database (on Unix,
+`/usr/share/zoneinfo` or the directory set in the `TZDIR` environment variable); see
+[jiff's documentation](https://docs.rs/jiff/latest/jiff/tz/struct.TimeZoneDatabase.html) for details.
+Make sure tzdata is installed wherever your application runs: minimal container images (distroless, scratch,
+Alpine without the `tzdata` package) don't have it, and `Schedule::new` returns `CronError::InvalidTimeZone` for any
+`TZ=` schedule there.
+
+Legacy timezone names are still supported, as long as the operating system's database provides them. This covers
+abbreviation-style zones such as `EET` or `CET`, and backward-compatibility aliases such as `Canada/Eastern` or
+`US/Pacific`. Some distributions ship them in a separate package (e.g. `tzdata-legacy` on Debian 13+ and
+Ubuntu 24.04+), so prefer canonical IANA names (`Europe/Athens`, `America/Toronto`, `America/Los_Angeles`) in new
+schedules.
 
 ## How to use
 
@@ -145,7 +159,6 @@ async fn stream() -> Result<()> {
 
 * `serde`: adds [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [
   `Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) trait implementations for `Schedule`.
-* `tz`: enables support of cron [schedules with timezone](#schedule-with-timezone).
 * `async`: adds several methods to use in async environments. See the module's documentation for details.
 
 ## Breaking changes: upgrading to 0.4.0 from the earlier versions
@@ -224,8 +237,12 @@ cron-lite = "0.4"
 
 # 0.5.0+
 jiff = "1"
-cron-lite = { version = "0.5", features = ["tz"] } # keep `tz` only for `TZ=` schedules
+cron-lite = "0.5" # the `tz` feature is gone: `TZ=` schedules are always supported
 ```
+
+The `tz` feature has been removed and `TZ=` schedules are always available. Remove `features = ["tz"]` from your
+`Cargo.toml`, otherwise Cargo rejects the dependency. Timezone data no longer ships inside the binary (as it did with
+`chrono-tz`); it's read from the operating system at runtime, see [schedules with timezone](#schedule-with-timezone).
 
 Replace `chrono::DateTime<Tz>` values and timezone type parameters with `jiff::ZonedDateTime`. The async types and
 the public iterator are no longer generic:
