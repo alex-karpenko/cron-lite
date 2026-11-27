@@ -1,6 +1,6 @@
 use crate::{schedule::ScheduleIterator, Schedule};
-use chrono::{DateTime, TimeZone, Utc};
 use futures::{future::FusedFuture, stream::FusedStream, Stream};
+use jiff::{Timestamp, ZonedDateTime};
 use pin_project::{pin_project, pinned_drop};
 use std::{
     collections::BTreeMap,
@@ -22,24 +22,24 @@ type ControlChannel = Sender<ControlCmd>;
 /// Represents a kind (character) and time of the async cron event returned by [`CronSleep`] or [`CronStream`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
-pub enum CronEvent<Tz: TimeZone> {
+pub enum CronEvent {
     /// The event happened in time.
-    Ok(DateTime<Tz>),
+    Ok(ZonedDateTime),
     /// The event was missed and happened after its scheduled time.
-    Missed(DateTime<Tz>),
+    Missed(ZonedDateTime),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum SleepState<Tz: TimeZone> {
+enum SleepState {
     Idle,
     Waiting(SleepQueueKey),
-    Completed(CronEvent<Tz>),
+    Completed(CronEvent),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum StreamState<Tz: TimeZone> {
+enum StreamState {
     Idle,
-    Waiting { key: SleepQueueKey, next: DateTime<Tz> },
+    Waiting { key: SleepQueueKey, next: ZonedDateTime },
     Completed,
 }
 
@@ -87,8 +87,8 @@ enum ControlCmd {
 ///
 /// # Examples
 /// ```rust
-/// use chrono::{Local, Utc};
 /// use cron_lite::{CronEvent, Schedule, Result};
+/// use jiff::{tz::TimeZone, Timestamp, ZonedDateTime};
 /// use std::time::Duration;
 ///
 /// #[tokio::main]
@@ -97,16 +97,17 @@ enum ControlCmd {
 ///
 ///     // Wakes up on the next 2-second instant.
 ///     // This (first) event may be "Missed" if "now" is exactly at the 2-second-slice.
-///     let event = schedule.sleep(&Local::now()).unwrap().await;
+///     let event = schedule.sleep(&ZonedDateTime::now()).unwrap().await;
 ///
 ///     // But the next one happens definitely in time
-///     let sleep = schedule.sleep(&Local::now()).unwrap();
+///     let sleep = schedule.sleep(&ZonedDateTime::now()).unwrap();
 ///     assert!(matches!(sleep.await, CronEvent::Ok(_)));
 ///
 ///     // If we spend too much time between creating and awaiting
 ///     // the CronSleep instance, we can "oversleep" the scheduled event and
 ///     // get a "Missed" one.
-///     let sleep = schedule.sleep(&Utc::now()).unwrap();
+///     let now = ZonedDateTime::new(Timestamp::now(), TimeZone::UTC);
+///     let sleep = schedule.sleep(&now).unwrap();
 ///     tokio::time::sleep(Duration::from_secs(3)).await;
 ///     assert!(matches!(sleep.await, CronEvent::Missed(_)));
 ///
@@ -115,15 +116,15 @@ enum ControlCmd {
 /// ```
 #[derive(Debug, Clone)]
 #[pin_project(PinnedDrop)]
-pub struct CronSleep<Tz: TimeZone> {
+pub struct CronSleep {
     until: Instant,
-    next: DateTime<Tz>,
+    next: ZonedDateTime,
     tx: ControlChannel,
-    state: SleepState<Tz>,
+    state: SleepState,
 }
 
-impl<Tz: TimeZone> CronSleep<Tz> {
-    fn new(until: Instant, next: DateTime<Tz>) -> Self {
+impl CronSleep {
+    fn new(until: Instant, next: ZonedDateTime) -> Self {
         Self {
             until,
             next,
@@ -144,15 +145,15 @@ impl<Tz: TimeZone> CronSleep<Tz> {
     }
 
     #[inline]
-    fn finish(&mut self, event: CronEvent<Tz>) -> Poll<CronEvent<Tz>> {
+    fn finish(&mut self, event: CronEvent) -> Poll<CronEvent> {
         self.state = SleepState::Completed(event.clone());
 
         Poll::Ready(event)
     }
 }
 
-impl<Tz: TimeZone> Future for CronSleep<Tz> {
-    type Output = CronEvent<Tz>;
+impl Future for CronSleep {
+    type Output = CronEvent;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let now_inst = Instant::now();
@@ -207,7 +208,7 @@ impl<Tz: TimeZone> Future for CronSleep<Tz> {
     }
 }
 
-impl<Tz: TimeZone> FusedFuture for CronSleep<Tz> {
+impl FusedFuture for CronSleep {
     #[inline]
     fn is_terminated(&self) -> bool {
         matches!(self.state, SleepState::Completed(_))
@@ -215,7 +216,7 @@ impl<Tz: TimeZone> FusedFuture for CronSleep<Tz> {
 }
 
 #[pinned_drop]
-impl<Tz: TimeZone> PinnedDrop for CronSleep<Tz> {
+impl PinnedDrop for CronSleep {
     #[inline]
     fn drop(self: Pin<&mut Self>) {
         if let SleepState::Waiting(key) = &self.state {
@@ -253,9 +254,9 @@ impl<Tz: TimeZone> PinnedDrop for CronSleep<Tz> {
 ///
 /// # Examples
 /// ```rust
-/// use chrono::Local;
 /// use cron_lite::{CronEvent, Schedule, Result};
 /// use futures::stream::StreamExt;
+/// use jiff::ZonedDateTime;
 /// use std::time::Instant;
 ///
 /// #[tokio::main]
@@ -263,7 +264,7 @@ impl<Tz: TimeZone> PinnedDrop for CronSleep<Tz> {
 ///     let schedule = Schedule::new("*/2 * * * * *")?;
 ///
 ///     // Create a stream of three events starting from the 2nd one.
-///     let mut stream = schedule.into_stream(&Local::now()).skip(1).take(3);
+///     let mut stream = schedule.into_stream(&ZonedDateTime::now()).skip(1).take(3);
 ///     let start = Instant::now();
 ///
 ///     while let Some(event) = stream.next().await {
@@ -276,16 +277,16 @@ impl<Tz: TimeZone> PinnedDrop for CronSleep<Tz> {
 /// ```
 #[pin_project(PinnedDrop)]
 #[derive(Debug, Clone)]
-pub struct CronStream<Tz: TimeZone> {
-    state: StreamState<Tz>,
-    iter: ScheduleIterator<Tz>,
+pub struct CronStream {
+    state: StreamState,
+    iter: ScheduleIterator,
     tx: ControlChannel,
     skip_missed: bool,
 }
 
-impl<Tz: TimeZone> CronStream<Tz> {
+impl CronStream {
     #[inline]
-    fn new(iter: ScheduleIterator<Tz>) -> Self {
+    fn new(iter: ScheduleIterator) -> Self {
         Self {
             state: StreamState::Idle,
             tx: sleep_thread_tx().clone(),
@@ -313,9 +314,9 @@ impl<Tz: TimeZone> CronStream<Tz> {
     ///
     /// # Examples
     /// ```rust
-    /// use chrono::Local;
     /// use cron_lite::{CronEvent, Schedule, Result};
     /// use futures::stream::StreamExt;
+    /// use jiff::ZonedDateTime;
     /// use std::time::{Duration, Instant};
     ///
     /// #[tokio::main]
@@ -323,7 +324,7 @@ impl<Tz: TimeZone> CronStream<Tz> {
     ///     let schedule = Schedule::new("*/2 * * * * *")?;
     ///
     ///     // Create a stream of three events starting from the 2nd one.
-    ///     let mut stream = schedule.into_stream(&Local::now()).with_skip_missed(true).take(3);
+    ///     let mut stream = schedule.into_stream(&ZonedDateTime::now()).with_skip_missed(true).take(3);
     ///
     ///     let start = Instant::now();
     ///     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -337,6 +338,7 @@ impl<Tz: TimeZone> CronStream<Tz> {
     /// }
     /// ```
     #[inline]
+    #[must_use]
     pub fn with_skip_missed(mut self, skip_missed: bool) -> Self {
         self.skip_missed = skip_missed;
         self
@@ -344,16 +346,17 @@ impl<Tz: TimeZone> CronStream<Tz> {
 
     /// Returns the current value of the `skip_missed` config option.
     #[inline]
+    #[must_use]
     pub fn skip_missed(&self) -> bool {
         self.skip_missed
     }
 }
 
-impl<Tz: TimeZone> Stream for CronStream<Tz> {
-    type Item = CronEvent<Tz>;
+impl Stream for CronStream {
+    type Item = CronEvent;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let now_nanos = Utc::now().timestamp_nanos_opt().unwrap();
+        let now_nanos = Timestamp::now().as_nanosecond();
         let now_inst = Instant::now();
         match &self.state {
             StreamState::Idle => {
@@ -417,7 +420,7 @@ impl<Tz: TimeZone> Stream for CronStream<Tz> {
     }
 }
 
-impl<Tz: TimeZone> FusedStream for CronStream<Tz> {
+impl FusedStream for CronStream {
     #[inline]
     fn is_terminated(&self) -> bool {
         matches!(self.state, StreamState::Completed)
@@ -425,7 +428,7 @@ impl<Tz: TimeZone> FusedStream for CronStream<Tz> {
 }
 
 #[pinned_drop]
-impl<Tz: TimeZone> PinnedDrop for CronStream<Tz> {
+impl PinnedDrop for CronStream {
     fn drop(self: Pin<&mut Self>) {
         if let StreamState::Waiting { key, .. } = &self.state {
             // Best-effort cleanup: if the sleep-manager thread is already gone, there's
@@ -504,20 +507,17 @@ fn sleep_thread_tx() -> &'static ControlChannel {
 }
 
 // Returns the Instant of the next event based on the provided raw "now".
-fn next_instant<Tz: TimeZone>(now_nanos: i64, next: &DateTime<Tz>) -> Option<Instant> {
+fn next_instant(now_nanos: i128, next: &ZonedDateTime) -> Option<Instant> {
     let now_inst = Instant::now();
-    let until_nanos = next.timestamp_nanos_opt()?;
-    // Widen to i128 before subtracting: `now` and `next` are each valid i64 nanosecond
-    // timestamps, but when they're far apart (e.g. `next` near MAX_YEAR and `now` near
-    // MIN_YEAR) their difference can exceed i64::MAX/MIN and overflow a plain i64 subtraction.
-    let delta = i128::from(until_nanos) - i128::from(now_nanos);
+    let until_nanos = next.timestamp().as_nanosecond();
+    let delta = until_nanos - now_nanos;
 
     if delta < 0 {
         None
     } else {
-        u64::try_from(delta)
-            .ok()
-            .and_then(|delta| now_inst.checked_add(Duration::from_nanos(delta)))
+        let delta_secs = u64::try_from(delta / 1_000_000_000).ok()?;
+        let delta_nanos = u32::try_from(delta % 1_000_000_000).ok()?;
+        now_inst.checked_add(Duration::new(delta_secs, delta_nanos))
     }
 }
 
@@ -529,9 +529,10 @@ impl Schedule {
     /// If the schedule has no upcoming events, it returns `None` immediately.
     ///
     /// See [`CronSleep`] for complete documentation with examples.
-    pub fn sleep<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> Option<CronSleep<Tz>> {
+    #[must_use]
+    pub fn sleep(&self, current: &ZonedDateTime) -> Option<CronSleep> {
         let next = self.upcoming(current)?;
-        let now_nanos = current.timestamp_nanos_opt()?;
+        let now_nanos = current.timestamp().as_nanosecond();
         let until = next_instant(now_nanos, &next)?;
 
         let sleep = CronSleep::new(until, next);
@@ -543,12 +544,14 @@ impl Schedule {
     /// as an asynchronous generator of the consecutive scheduled events.
     ///
     /// See [`CronStream`] for complete documentation with examples.
-    pub fn stream<Tz: TimeZone>(&self, current: &DateTime<Tz>) -> CronStream<Tz> {
+    #[must_use]
+    pub fn stream(&self, current: &ZonedDateTime) -> CronStream {
         CronStream::new(self.iter(current))
     }
 
     /// The same as [`Schedule::stream()`] but consumes the `Schedule`.
-    pub fn into_stream<Tz: TimeZone>(self, current: &DateTime<Tz>) -> CronStream<Tz> {
+    #[must_use]
+    pub fn into_stream(self, current: &ZonedDateTime) -> CronStream {
         CronStream::new(self.into_iter(current))
     }
 }
@@ -556,20 +559,37 @@ impl Schedule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-    #[cfg(feature = "tz")]
-    use chrono_tz::Europe::Kyiv;
+    use crate::test_utils::{parse_rfc3339, zoned};
     use futures::{select, StreamExt};
+    use jiff::{civil, tz::TimeZone, SignedDuration};
     use rstest::rstest;
 
     const ACCEPTED_SLEEP_DRIFT: Duration = Duration::from_millis(5);
     const ACCEPTED_STREAM_DRIFT: Duration = Duration::from_millis(15);
 
-    fn test_upcoming_instant_case<T: TimeZone>(schedule: &str, current: &DateTime<T>, expected_delta: Duration) {
+    fn utc_now() -> ZonedDateTime {
+        ZonedDateTime::new(Timestamp::now(), TimeZone::UTC)
+    }
+
+    fn utc(
+        year: i16,
+        month: i8,
+        day: i8,
+        hour: i8,
+        minute: i8,
+        second: i8,
+        nanos: i32,
+    ) -> Result<ZonedDateTime, jiff::Error> {
+        civil::date(year, month, day)
+            .at(hour, minute, second, nanos)
+            .to_zoned_datetime(TimeZone::UTC)
+    }
+
+    fn test_upcoming_instant_case(schedule: &str, current: &ZonedDateTime, expected_delta: Duration) {
         let schedule = Schedule::try_from(schedule).unwrap();
 
         let next = schedule.upcoming(current).unwrap();
-        let now_nanos = current.timestamp_nanos_opt().unwrap();
+        let now_nanos = current.timestamp().as_nanosecond();
         let instant = next_instant(now_nanos, &next).unwrap();
 
         let delta = instant - Instant::now();
@@ -586,8 +606,12 @@ mod tests {
     #[rstest]
     #[timeout(Duration::from_secs(3))]
     fn test_next_instant_unschedulable() {
-        let now = (Utc::now() + Duration::from_secs(10)).timestamp_nanos_opt().unwrap();
-        let next = Utc::now();
+        let now = utc_now()
+            .checked_add(SignedDuration::from_secs(10))
+            .unwrap()
+            .timestamp()
+            .as_nanosecond();
+        let next = utc_now();
         let instant = next_instant(now, &next);
         assert!(instant.is_none(), "instant={instant:?}");
     }
@@ -595,8 +619,8 @@ mod tests {
     #[rstest]
     #[timeout(Duration::from_secs(3))]
     fn test_next_instant_future() {
-        let now = Utc::now().timestamp_nanos_opt().unwrap();
-        let next = Utc::now() + Duration::from_secs(5);
+        let now = utc_now().timestamp().as_nanosecond();
+        let next = utc_now().checked_add(SignedDuration::from_secs(5)).unwrap();
         let instant = next_instant(now, &next);
         assert!(instant.is_some());
         let delta = instant.unwrap().saturating_duration_since(Instant::now());
@@ -605,28 +629,21 @@ mod tests {
 
     #[rstest]
     #[timeout(Duration::from_secs(3))]
-    fn test_next_instant_next_outside_nanosecond_range() {
-        // `next` is far enough in the future that it's outside chrono's nanosecond-representable
-        // range (roughly 1677..=2262), so `timestamp_nanos_opt()` returns `None` and `next_instant`
-        // must propagate that via its `?` early return instead of panicking or misbehaving.
-        let now = Utc::now().timestamp_nanos_opt().unwrap();
-        let next = Utc.with_ymd_and_hms(3000, 1, 1, 0, 0, 0).unwrap();
+    fn test_next_instant_beyond_i64_nanosecond_range() {
+        let now = utc_now().timestamp().as_nanosecond();
+        let next = utc(3000, 1, 1, 0, 0, 0, 0).unwrap();
 
         let instant = next_instant(now, &next);
 
-        assert!(instant.is_none(), "instant={instant:?}");
+        assert!(instant.is_some(), "instant={instant:?}");
     }
 
-    // Regression tests for a debug-mode "attempt to subtract with overflow" panic: `now` and
-    // `next` are each valid i64 nanosecond timestamps on their own, but when they're far
-    // enough apart (e.g. `current` near the crate's MIN_YEAR and the schedule near MAX_YEAR)
-    // a plain `i64` subtraction of the two overflows i64::MAX/MIN.
     #[rstest]
     #[timeout(Duration::from_secs(3))]
     fn test_next_instant_no_panic_for_far_future_timestamp() {
-        let now = Utc.with_ymd_and_hms(1700, 1, 1, 0, 0, 0).unwrap();
-        let next = Utc.with_ymd_and_hms(2260, 1, 1, 0, 0, 0).unwrap();
-        let now_nanos = now.timestamp_nanos_opt().unwrap();
+        let now = utc(1700, 1, 1, 0, 0, 0, 0).unwrap();
+        let next = utc(2260, 1, 1, 0, 0, 0, 0).unwrap();
+        let now_nanos = now.timestamp().as_nanosecond();
 
         let instant = next_instant(now_nanos, &next);
 
@@ -637,9 +654,9 @@ mod tests {
     #[rstest]
     #[timeout(Duration::from_secs(3))]
     fn test_next_instant_no_panic_for_far_past_next() {
-        let now = Utc.with_ymd_and_hms(2260, 1, 1, 0, 0, 0).unwrap();
-        let next = Utc.with_ymd_and_hms(1700, 1, 1, 0, 0, 0).unwrap();
-        let now_nanos = now.timestamp_nanos_opt().unwrap();
+        let now = utc(2260, 1, 1, 0, 0, 0, 0).unwrap();
+        let next = utc(1700, 1, 1, 0, 0, 0, 0).unwrap();
+        let now_nanos = now.timestamp().as_nanosecond();
 
         let instant = next_instant(now_nanos, &next);
 
@@ -657,11 +674,10 @@ mod tests {
         #[case] current: &str,
         #[case] expected_delta: Duration,
     ) {
-        let current = DateTime::parse_from_rfc3339(current).unwrap();
+        let current = parse_rfc3339(current).unwrap();
         test_upcoming_instant_case(schedule, &current, expected_delta);
     }
 
-    #[cfg(feature = "tz")]
     #[rstest]
     #[case(
         "TZ=Europe/Kyiv */2 * * * * *",
@@ -685,22 +701,21 @@ mod tests {
         #[case] current: &str,
         #[case] expected_delta: Duration,
     ) {
-        let current = DateTime::parse_from_rfc3339(current).unwrap();
+        let current = parse_rfc3339(current).unwrap();
         test_upcoming_instant_case(schedule, &current, expected_delta);
     }
 
-    #[cfg(feature = "tz")]
     #[rstest]
-    #[case("TZ=Europe/Kyiv 1 5 * * *", Kyiv.with_ymd_and_hms(2025, 3, 30, 2, 59, 59).unwrap(), Duration::from_secs(60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=UTC 1 5 * * *", Kyiv.with_ymd_and_hms(2025, 3, 30, 2, 59, 59).unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=Europe/Paris 1 5 * * *", Kyiv.with_ymd_and_hms(2025, 3, 30, 2, 59, 59).unwrap(), Duration::from_secs(2*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=Europe/Kyiv 1 5 * * *", Kyiv.with_ymd_and_hms(2025, 1, 1, 2, 59, 59).unwrap(), Duration::from_secs(2*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=UTC 1 5 * * *", Kyiv.with_ymd_and_hms(2025, 1, 1, 2, 59, 59).unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
-    #[case("TZ=Europe/Paris 1 5 * * *", Kyiv.with_ymd_and_hms(2025, 1, 1, 2, 59, 59).unwrap(), Duration::from_secs(3*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=Europe/Kyiv 1 5 * * *", zoned(2025, 3, 30, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=UTC 1 5 * * *", zoned(2025, 3, 30, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=Europe/Paris 1 5 * * *", zoned(2025, 3, 30, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(2*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=Europe/Kyiv 1 5 * * *", zoned(2025, 1, 1, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(2*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=UTC 1 5 * * *", zoned(2025, 1, 1, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(4*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
+    #[case("TZ=Europe/Paris 1 5 * * *", zoned(2025, 1, 1, 2, 59, 59, "Europe/Kyiv").unwrap(), Duration::from_secs(3*60*60 /*hours*/ + 60 /*minutes*/ + 1))]
     #[timeout(Duration::from_secs(3))]
-    fn test_upcoming_instant_with_both_tz<T: TimeZone>(
+    fn test_upcoming_instant_with_both_tz(
         #[case] schedule: &str,
-        #[case] current: DateTime<T>,
+        #[case] current: ZonedDateTime,
         #[case] expected_delta: Duration,
     ) {
         test_upcoming_instant_case(schedule, &current, expected_delta);
@@ -711,7 +726,7 @@ mod tests {
     #[timeout(Duration::from_secs(3))]
     async fn test_sleep_ok() {
         let schedule = Schedule::try_from("*/2 * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let res = schedule.sleep(&now).unwrap().await;
         assert!(matches!(res, CronEvent::Ok(_)));
     }
@@ -721,7 +736,7 @@ mod tests {
     #[timeout(Duration::from_secs(3))]
     async fn test_sleep_missed() {
         let schedule = Schedule::try_from("*/2 * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let sleep = schedule.sleep(&now).unwrap();
         tokio::time::sleep(Duration::from_millis(2100)).await;
         assert!(matches!(sleep.await, CronEvent::Missed(_)));
@@ -734,7 +749,7 @@ mod tests {
         const INTERVAL: Duration = Duration::from_millis(2000);
 
         let schedule = Schedule::try_from("*/2 * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let mut stream = schedule.stream(&now);
 
         stream.next().await;
@@ -762,7 +777,7 @@ mod tests {
     #[timeout(Duration::from_secs(10))]
     async fn test_stream_with_delays() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let mut stream = schedule.into_stream(&now);
 
         stream.next().await;
@@ -782,7 +797,7 @@ mod tests {
     #[timeout(Duration::from_secs(3))]
     async fn test_stream_finish() {
         let schedule = Schedule::try_from("0 0 0 1 1 * 2024").unwrap();
-        let now = Utc.with_ymd_and_hms(2023, 12, 31, 23, 23, 23).unwrap();
+        let now = utc(2023, 12, 31, 23, 23, 23, 0).unwrap();
         let mut stream = schedule.stream(&now);
 
         assert!(matches!(stream.next().await, Some(CronEvent::Missed(_))));
@@ -794,7 +809,7 @@ mod tests {
     #[timeout(Duration::from_secs(3))]
     async fn test_sleep_is_terminated() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let mut test_sleep = schedule.sleep(&now).unwrap();
         assert!(!test_sleep.is_terminated());
 
@@ -816,7 +831,7 @@ mod tests {
     #[timeout(Duration::from_secs(3))]
     async fn test_stream_is_terminated() {
         let schedule = Schedule::try_from("0 0 0 1 1 * 2024").unwrap();
-        let now = Utc.with_ymd_and_hms(2023, 12, 31, 23, 23, 23).unwrap();
+        let now = utc(2023, 12, 31, 23, 23, 23, 0).unwrap();
         let mut test_stream = schedule.stream(&now);
         assert!(!test_stream.is_terminated());
 
@@ -835,7 +850,7 @@ mod tests {
     #[timeout(Duration::from_secs(7))]
     async fn test_stream_take() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
 
         let test_stream = schedule.stream(&now).skip(1).take(5).collect::<Vec<_>>().await;
 
@@ -847,7 +862,7 @@ mod tests {
     #[timeout(Duration::from_secs(1))]
     fn test_stream_set_with_skip_missed() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
-        let stream = schedule.stream(&Utc::now());
+        let stream = schedule.stream(&utc_now());
 
         assert!(!stream.skip_missed());
         let stream = stream.with_skip_missed(true);
@@ -859,7 +874,7 @@ mod tests {
     #[timeout(Duration::from_secs(7))]
     async fn test_stream_with_skip_missed_without_finish() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
-        let test_stream = schedule.stream(&Utc::now()).with_skip_missed(true).take(2);
+        let test_stream = schedule.stream(&utc_now()).with_skip_missed(true).take(2);
 
         tokio::time::sleep(Duration::from_secs(3)).await;
         let result = test_stream.collect::<Vec<_>>().await;
@@ -872,7 +887,7 @@ mod tests {
     #[timeout(Duration::from_secs(1))]
     async fn test_stream_with_skip_missed_finished() {
         let schedule = Schedule::try_from("0 0 0 1 1 * 2024").unwrap();
-        let now = Utc.with_ymd_and_hms(2023, 12, 31, 23, 23, 23).unwrap();
+        let now = utc(2023, 12, 31, 23, 23, 23, 0).unwrap();
         let test_stream = schedule.stream(&now).with_skip_missed(true).take(2);
 
         let result = test_stream.collect::<Vec<_>>().await;
@@ -884,10 +899,11 @@ mod tests {
     #[timeout(Duration::from_secs(5))]
     async fn test_multiple_concurrent_sleeps() {
         let schedule = Schedule::try_from("* * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let mut handles = Vec::new();
         for _ in 0..5 {
             let sched = schedule.clone();
+            let now = now.clone();
             handles.push(tokio::spawn(async move {
                 let event = sched.sleep(&now).unwrap().await;
                 assert!(matches!(event, CronEvent::Ok(_) | CronEvent::Missed(_)));
@@ -906,7 +922,7 @@ mod tests {
         use std::task::{Context, Poll};
 
         let schedule = Schedule::try_from("* * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let mut sleep = schedule.sleep(&now).unwrap();
 
         let waker = noop_waker();
@@ -932,7 +948,7 @@ mod tests {
         use std::task::{Context, Poll};
 
         let schedule = Schedule::try_from("* * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let mut sleep = schedule.sleep(&now).unwrap();
 
         let _ = (&mut sleep).await;
@@ -950,7 +966,7 @@ mod tests {
         use std::task::{Context, Poll};
 
         let schedule = Schedule::try_from("* * * * * *").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let mut stream = schedule.stream(&now);
 
         let waker = noop_waker();
@@ -975,7 +991,7 @@ mod tests {
         use std::task::{Context, Poll};
 
         let schedule = Schedule::try_from("0 0 0 1 1 * 2020").unwrap();
-        let now = Utc::now();
+        let now = utc_now();
         let mut stream = schedule.stream(&now);
 
         let waker = noop_waker();

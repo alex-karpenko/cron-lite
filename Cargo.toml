@@ -5,32 +5,28 @@ categories = ["date-and-time", "parser-implementations"]
 description = "Lightweight cron expressions parser and time series generator"
 edition = "2021"
 rust-version = "1.86"
-homepage = "https://github.com/alex-karpenko/cron-lite"
 keywords = ["time", "cron", "schedule", "async", "periodic"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/alex-karpenko/cron-lite"
-version = "0.4.0"
+version = "0.5.0"
 exclude = [".github/**", ".vscode/**", "TODO.md", "Cargo.lock", "target/**", ".gitignore", "mutants.*/**"]
 
 [features]
 default = []
-async = ["dep:futures", "dep:pin-project", "chrono/now"]
+async = ["dep:futures", "dep:pin-project"]
 serde = ["dep:serde"]
-tz = ["dep:chrono-tz"]
 
 [dependencies]
-chrono = { version = "0.4.20", default-features = false }
-chrono-tz = { version = "0.10.0", default-features = false, optional = true }
 futures = { version = "0.3.31", default-features = false, features = ["async-await"], optional = true }
+jiff = "1.0.2"
 pin-project = { version = "1.1.10", default-features = false, optional = true }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
 
 [dev-dependencies]
-chrono = { version = "0.4.20", default-features = false, features = ["now", "clock"] }
 criterion = "0.8.1"
 futures = { version = "0.3.31", default-features = false, features = ["executor"] }
-rstest = { version = "0.26.1", default-features = false }
+rstest = { version = "0.29.0", default-features = false }
 rstest_reuse = { version = "0.7.0", default-features = false }
 tokio = { version = "1.45.0", default-features = false, features = ["time", "macros", "rt-multi-thread"] }
 

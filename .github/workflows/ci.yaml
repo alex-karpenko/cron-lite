@@ -21,7 +21,7 @@ jobs:
           - 1.86
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         name: Setup toolchain
         with:
@@ -44,6 +44,13 @@ jobs:
       - name: Doc
         run: cargo doc --no-deps --all-features
 
+      # Tests cover legacy timezone names (EET, Canada/Eastern, US/Pacific),
+      # which Ubuntu 24.04+ ships in a separate package.
+      - name: Install legacy tzdata
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tzdata-legacy
+
       - name: Tests
         run: cargo test --all --all-features
 
@@ -63,6 +70,6 @@ jobs:
     needs: ci
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
